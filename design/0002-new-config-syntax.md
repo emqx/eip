@@ -121,24 +121,16 @@ listeners.tcp {
   max_connections: 1024000
   max_conn_rate: 1000
   active_n: 1000
-  tcp_options {
-    backlog: 512
-    send_timeout: 5s
-    send_timeout_close: on
-    recbuf: 64KB
-    sndbuf: 64KB
-    buffer: 16KB
-  }
+  tcp_options: ${tcp.options} //Substitution
 }
 
 listener.ssl {
   bind: 8883
   zone: default
-  enable_ssl: on
   acceptors: 16
   max_conn_rate: 1000
   max_connections: 102400
-  include ssl.conf
+  include "ssl.conf" //Include
 }
 
 listener.ws {
@@ -158,6 +150,15 @@ listener.wss {
   max_conn_rate: 1000
   max_connections: 102400
   mqtt_path: /mqtt
+}
+
+tcp.options {
+  backlog: 512
+  send_timeout: 5s
+  send_timeout_close: on
+  recbuf: 64KB
+  sndbuf: 64KB
+  buffer: 16KB
 }
 ```
 
