@@ -2,7 +2,7 @@
 
 ## Abstract
 
-Introdce a new configuration format in EMQ X v5.0 release.
+Introduce a new configuration format in EMQ X v5.0 release.
 
 ## Motivation
 
