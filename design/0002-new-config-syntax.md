@@ -85,7 +85,7 @@ listeners:
 
 Node/cluster config in HOCON style:
 
-```nginx
+```
 node {
   name: "emqx@127.0.0.1"
   cookie: emqxsecretcookie
@@ -105,7 +105,7 @@ cluster {
 
 Listener config in HOCON style:
 
-```nginx
+```
 
 listener.tcp {
   bind: "0.0.0.0:1883"
