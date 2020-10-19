@@ -114,7 +114,7 @@ listener.tcp {
   max_connections: 1024000
 }
 
-listeners.tcp {
+listener.tcp {
   bind: "127.0.0.1:11883"
   zone: internal
   acceptors: 4
