@@ -85,7 +85,7 @@ listeners:
 
 Node/cluster config in HOCON style:
 
-```
+```hocon
 node {
   name: "emqx@127.0.0.1"
   cookie: emqxsecretcookie
@@ -105,8 +105,7 @@ cluster {
 
 Listener config in HOCON style:
 
-```
-
+```hocon
 listener.tcp {
   bind: "0.0.0.0:1883"
   zone: default
@@ -171,3 +170,4 @@ Libs to parse YAML/HOCON.
 ## References
 
 - [HOCON Config](https://github.com/lightbend/config)
+- [SAP Integrations and Data Management](https://help.sap.com/viewer/50c996852b32456c96d3161a95544cdb/1905/en-US/25550740941d434b8c003347601af0ac.html)
