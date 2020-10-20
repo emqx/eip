@@ -1,8 +1,8 @@
-# New Config Syntax for EMQ X v5.0
+# New Configuration Syntax for EMQ X v5.0
 
 ## Abstract
 
-Introduce a new configuration format in EMQ X v5.0 release.
+Introduce a new configuration format in EMQX v5.0 release.
 
 ## Motivation
 
@@ -35,50 +35,44 @@ Listeners config in YAML style:
 ```yaml
 listeners:
   tcp:
-    - name: mqtt_over_tcp
-      bind: 0.0.0.0:1883
-      zone: default
-      acceptors: 8
-      max_conn_rate: 1000
-      max_connections: 1024000
-    - name: mqtt_over_ssl
-      bind: 8883
-      zone: default
-      enable_ssl: on
-      acceptors: 16
-      max_conn_rate: 1000
-      max_connections: 102400
-    - name: internal_mqtt_over_tcp
-      bind: 127.0.0.1:11883
-      zone: internal
-      acceptors: 4
-      max_connections: 1024000
-      max_conn_rate: 1000
-      active_n: 1000
-      tcp_options:
-        backlog: 512
-        send_timeout: 5s
-        send_timeout_close: on
-        recbuf: 64KB
-        sndbuf: 64KB
-        buffer: 16KB
+  - bind: 0.0.0.0:1883
+    zone: default
+    acceptors: 8
+    max_conn_rate: 1000
+    max_connections: 1024000
+  - bind: 127.0.0.1:2883
+    zone: internal
+    acceptors: 4
+    max_connections: 1024000
+    max_conn_rate: 1000
+    active_n: 1000
+    tcp_options:
+      backlog: 512
+      send_timeout: 5s
+      send_timeout_close: on
+      recbuf: 64KB
+      sndbuf: 64KB
+      buffer: 16KB
+  ssl:
+  - bind: 8883
+    zone: default
+    acceptors: 16
+    max_conn_rate: 1000
+    max_connections: 102400
   ws:
-    - name : mqtt_over_websocket
-      bind: 8083
-      zone: default
-      mqtt_path: /mqtt
-      acceptors: 4
-      max_conn_rate: 1000
-      max_connections: 102400
-    - name: mqtt_over_websocket_ssl
-      bind: 8084
-      zone: default
-      enable_ssl: on
-      mqtt_path: /mqtt
-      acceptors: 4
-      max_conn_rate: 1000
-      max_connections: 102400
-
+  - bind: 8083
+    zone: default
+    mqtt_path: /mqtt
+    acceptors: 4
+    max_conn_rate: 1000
+    max_connections: 102400
+  wss:
+  - bind: 8084
+    zone: default
+    mqtt_path: /mqtt
+    acceptors: 4
+    max_conn_rate: 1000
+    max_connections: 102400
 ```
 
 ### HOCON Style
@@ -172,3 +166,5 @@ Libs to parse YAML/HOCON.
 
 - [HOCON Config](https://github.com/lightbend/config)
 - [SAP Integrations and Data Management](https://help.sap.com/viewer/50c996852b32456c96d3161a95544cdb/1905/en-US/25550740941d434b8c003347601af0ac.html)
+- [HashiCorp Resources](https://www.terraform.io/docs/configuration/syntax.html)
+
