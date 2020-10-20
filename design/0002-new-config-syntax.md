@@ -7,7 +7,7 @@ Introduce a new configuration format in EMQX v5.0 release.
 ## Motivation
 
 - The `k=v` format is too verbose
-- Should support group and list
+- Should support hierarchy and list
 
 ## Design
 
