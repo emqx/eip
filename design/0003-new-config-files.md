@@ -23,7 +23,7 @@ The config files and the config entries need to have the following properties:
 
 - The config entries should be able to loaded from a centralized config service in a large distribution deployment.
 
-- The config files should be able to upgraded at a backward compatible manner during release hot upgrade.
+- The config files should be able to upgraded in a backward compatible manner during release hot upgrade.
 
 ## Rationale
 
@@ -45,12 +45,11 @@ Also the config file names should be clear so that the user can speculate which 
 ```
 .
 ├── emqx.conf
-├── mqtt.conf
 ```
 
-I suggested 2 config files here, one is the main config file for the emqx broker, and the other one contains configs for MQTT protocol (zones).
+I suggested only one config file (`emqx.conf`) here.
 
-For the HOCON based configuration struct of emqx, see [configs_hocon](https://github.com/terry-xiaoyu/emqx/tree/emqx50_shawn/configs_hocon).
+For the HOCON based configuration struct of emqx, see [configs](https://github.com/terry-xiaoyu/emqx/tree/emqx50_shawn/configs).
 
 ### Deploy Without Centralized Config Service
 
@@ -84,9 +83,10 @@ The schema file is not mandatory if no translation/validation is needed. The for
 That is, we prefer:
 
 ```
-force_shutdown_policy:
+force_shutdown_policy {
   max_message_queue_len: 10000
   max_heap_size: 64MB
+}
 ```
 
 to
@@ -165,8 +165,7 @@ e.g.
 ```shell
 emqx start --node-name="emqx1@192.168.0.12" \
   --config-file="/var/docker/volumes/emqx.conf.1" \
-  --addtional-config-file="/var/docker/volumes/node.conf.1" \
-  --addtional-config-file="/var/docker/volumes/node.conf.2"
+  --addtional-config-file="/var/docker/volumes/node.conf.1,/var/docker/volumes/node.conf.2"
 ```
 
 We prefer command arguments rather than environment variables, as:
@@ -250,7 +249,7 @@ The emqx rule engine provided a in-module config spec to the dashboard. It is us
 
 The `params` field is the config spec for that resource. The config spec is designed in a key-value manner, where the key is the name of the config entry, and the value describes the data type, title of the config entry, and whether it is required or optional, etc.
 
-This works but is not easy to use, especially for developers from GitHub community to develop their own plugins. Also for the localization method used here is not extensible, we need to switch to some appropriate method such as [gettext][1].
+This works but is not easy to use, especially for developers from GitHub community to develop their own plugins. Also for the localization method used here is not extensible, we need to switch to some appropriate method such as [gettext](https://en.wikipedia.org/wiki/Gettext)[1].
 
 #### A new Plugin Framework
 
@@ -288,4 +287,4 @@ After that the upgrade handler will load new config files.
 
 ## References
 
-- [1]: https://en.wikipedia.org/wiki/Gettext "gettext"
+[1] https://en.wikipedia.org/wiki/Gettext "gettext"
