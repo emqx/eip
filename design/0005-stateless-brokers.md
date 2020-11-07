@@ -389,12 +389,12 @@ This way we enhanced the performance of publishing messages at the cost of the m
 
 ### Multiple clusters
 
-If we need to deploy two or three active-active clusters cross data centers, the core node will forward sub/pub messages to a selected core node in all other clusters. It select the core node of peer cluster by the hash of the topic. This is good method to create replicas of persistent sessions/states.
+If we need to deploy two or three active-active clusters cross data centers, the core node will forward PUBLISH messages to a selected core node in all other clusters. It selects the core node of peer cluster by the hash of the topic.
 
 ```
                        |
-[Cores in DC1]         |           [Cores in DC2]
-                       | sub:'t/1'
+[Cores in Cluster1]    |           [Cores in Cluster2]
+                       | pub: 't/1'
          +-------------------+
          | +---+       |     | +---+
          | |t/3|       |     | |t/3|
@@ -403,11 +403,15 @@ If we need to deploy two or three active-active clusters cross data centers, the
        |t/1|   |t/2|   |   |t/1|   |t/2|
        +-^-+   +---+   |   +---+   +---+
 +--------|-------------+------------------------+
-       +-+-+ sub:'t/1' |
-       |   |<--------- |
-       +---+           |
- [Brokers]
+       +-+-+  publish
+       |   |<---------
+       +---+   't/1'
+ [Brokers can connect to cores on both clusters]
 ```
+
+Only publish messges are passed through different clusters, and the sessions/states are not replicated across the clusters, this means there canbe 2 clients connected to different cluster using the same client-id.  This works like a mqtt bridge.
+
+For users who want to deploy core nodes in multiple data centers just for disaster tolerance, then setting up a private network between these data centers and creating a big core cluster is better.
 
 ### Session Management
 
