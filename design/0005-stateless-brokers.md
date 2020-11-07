@@ -79,9 +79,50 @@ This proposal suggests breaking the emqx into 3 node types: The (stateless) brok
 
 There's no clustering for broker nodes. In other word, the broker nodes are completely decentralized and consist a peer-to-peer (p2p) distributed network.
 
-Each broker node establishes one communication channel to each of the core node. The channel can be secured links over TLS so that it is possible to deploy core nodes and broker nodes in different data centers.
+Each broker node establishes one communication channel to each of the core node when subscribing a topic (see the subscription handling later). The channel can be secured links over TLS so that it is possible to deploy core nodes and broker nodes in different data centers. The core nodes consist a fully meshed distributed network.
 
-The core nodes consist a fully meshed distributed network.
+```
+               X    X
+                             X      X
+             X  +---+ X       +---+  X
+                | B |      X  | B |
+                +-+-+         +-+-+
+               X  |   X      X  |    X
+      X           |             |
+  X      X    +---+-------------+---+     X   X
+    +---+     |       +-----+       |     +---+  X
+X   | B +-----+       |     |       +-----+ B |
+    +---+     |       |  C  |       |   X +---+ X
+    X    X    |       +--+--+       |       X
+              | +-----+  |  +-----+ |
+   X  X       | |  C  +--+--+  C  | |   X      X
+    +---+     | |     |     |     | |     +---+
+ X  | B +-----+ +-----+     +-----+ +-----+ B |
+    +---+     +---------------------+     +---+   X
+     X   X        |             |        X   X
+                  |             |
+                 X|         X   |  X
+             X  +---+ X       +-+-+
+                | B |         | B |   X
+             X  +---+       X +---+
+                 X   X          X   X
+
+Core Node:
+  +-----+
+  |  C  |
+  +-----+
+
+Broker Node:
+  +---+
+  | B |
+  +---+
+
+Devices:
+   X
+
+```
+
+The connections between core and broker nodes are established by RPC channel. `gen_rpc` is a nice choice:
 
 ```
 +----------+
@@ -97,9 +138,7 @@ The core nodes consist a fully meshed distributed network.
 +----------+
 ```
 
-As shown above, the connections between core and broker nodes are established by RPC channel. `gen_rpc` is a nice choice.
-
-The benefit of this architecture is that we could setup hundreds of thousands of broker nodes without needing to keep a global view of the nodes in each broker. Adding/Removing a broker is pretty simple because we don't have to establish/disconnect distribution links to other brokers. The drawback is that messages forwarding between brokers have to go through a core node as a proxy. But considering we may maintain message queues in the core nodes is case of persistent session, that makes sense because if we don't use core nodes as proxies, we would have had to pass the messages to the core nodes for message queuing anyway. Message passing between the broker nodes and core nodes can be batched to enhance the throughput.
+The benefit of this architecture is that we could setup hundreds of thousands of broker nodes without needing to keep a global view of the nodes in each broker. Adding/Removing a broker is pretty simple because we don't have to establish/disconnect distribution links to other brokers. The drawback is that messages forwarding between brokers have to go through a core node as a proxy. But considering we may need to maintain message queues in the core nodes in case of persistent session, that makes sense because if we didn't use core nodes as proxies, we would have had to pass the messages to the core nodes for message queuing anyway. Message passing between the broker nodes and core nodes can be batched to enhance the throughput.
 
 Another benefit of this approach is that we could setup channels between multiple geographically deployed core clusters to enable the cross data-center message passing. The networks between broker nodes from different data centers don't have to be connected to publish a message. It's nice as there are probably much more broker nodes than core nodes, so that setting up connections between core nodes is easier than do that between broker nodes.
 
@@ -314,7 +353,7 @@ The the rule of the hash key would be: "s/{3}".
 
 Of course this optimization only makes sense when the topics are well designed so we could evenly partition them among core nodes by some rules.
 
-#### Solution1: Replicate the route table
+#### Solution2: Replicate the route table
 
 Another way is to replicate the route table to all of the core nodes, so that the Core1 don't have to forward the message to the Core3, as it has the full routing info about where the message should go.
 
@@ -347,6 +386,28 @@ For details of handling of persistent/temporary sessions, see section `Session M
 The important thing in this approach is, we need to replicate the subscribe operations about wildcard topic-filters among the core nodes.
 
 This way we enhanced the performance of publishing messages at the cost of the memory footprint for wildcard subscriptions. I prefer this solution as the trie table cannot be partitioned even in the first solution, if there're too many wildcard topics, the trie table will be large on each core node.
+
+### Multiple clusters
+
+If we need to deploy two or three active-active clusters cross data centers, the core node will forward sub/pub messages to a selected core node in all other clusters. It select the core node of peer cluster by the hash of the topic. This is good method to create replicas of persistent sessions/states.
+
+```
+                       |
+[Cores in DC1]         |           [Cores in DC2]
+                       | sub:'t/1'
+         +-------------------+
+         | +---+       |     | +---+
+         | |t/3|       |     | |t/3|
+         | +---+       |     | +---+
+       +-+-+   +---+   |   +-v-+   +---+
+       |t/1|   |t/2|   |   |t/1|   |t/2|
+       +-^-+   +---+   |   +---+   +---+
++--------|-------------+------------------------+
+       +-+-+ sub:'t/1' |
+       |   |<--------- |
+       +---+           |
+ [Brokers]
+```
 
 ### Session Management
 
