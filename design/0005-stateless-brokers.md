@@ -68,12 +68,14 @@ gateway nodes, and the (stateful) core nodes.
 
 - A gateway node is a db-less front-end which handles connections and requests
   from MQTT clients. Without having to do the booking work like the core nodes
-  it should allow such node to be tuned and for dedicating resources serving
-  the clients. It's db-lessness should also make it easier and quicker to
-  create or destroy a node in morden cloud platforms such as AWS and k8s.
+  it should allow such node to be tuned for dedicating resources to serve
+  the clients. It's statelessness should also make it easier and quicker to
+  create or destroy a node in morden service orchestration platforms such as
+  AWS and k8s.
 
-The core nodes in such a cluster may work like an opaque network to serve both
-MQTT clients and the gateway nodes.
+The core cluster in such a cluster may work like an opaque network to serve both
+MQTT clients and the gateway nodes. And there can be a load balancer dispatching
+load from clients to different gateway nodes.
 
 ```
                  [Gateway Nodes] | [Core Nodes]
@@ -105,6 +107,10 @@ MQTT clients and the gateway nodes.
 There's no clustering for gateway nodes. In other words, the gateway nodes do
 not communicate with each other, but only through the core nodes.
 
+Gateway nodes and core nodes communicate over `gen_rpc`, either side can be
+both caller and callee. `gen_rpc` may reuse the underlying tcp connections
+but logically the communication is unidirectional.
+
 #### Core Node to Core node
 
 The core network is a fully meshed Erlang cluster. This may change in the future
@@ -115,51 +121,57 @@ Messages are passed using Erlang distribution.
 
 At start/restart, a gateway node should issue a registration request,
 announcing its presence to (random) one of the core nodes.
-The serving core node sends back all core nodes in the cluster as response.
+The serving core node sends back a list of serving core nodes in the
+response.
 
 The registration API could be HTTP(S) to make management easier. e.g.
 
 ```
-curl -XPOST http://core-1:8090/register?endpoint=gateway-1:3018
+curl -XPOST http://core-1:12333/register?endpoint=gateway-1:2333
 ```
 
-This command registers endpoint `gateway-1:3018` to the core network so the
+This command registers endpoint `gateway-1:2333` to the core network so the
 core nodes can send `gen_rpc` messages for publishing messages to the gateway.
 In the reply, HTTP body may look like:
 
 ```
-{"reg_id":1, "core_nodes": ["core-1:3018","core-2:3018"]}
+{"reg_id":1, "core_nodes": ["core-1:2333","core-2:2333"]}
 ```
 
 Where "reg_id" is an integer assigned by the core cluster.
-This ID should be globally unique and all nodes should agree to it. The ID is
-stored in the globally replicated subscription table.
+This ID should be a globally unique integer replicated to all core nodes.
 
 Depending on the capacity of a gateway node, there could be a very large number
 of topics pointing to the same gateway, so it makes sense to have a compact
-value (integer)instead of the full host:port string for its reference.
+value (integer) instead of the full `host:port` string for its reference.
 
 #### Gateway to Core
 
-When publishing messages from gateway to core, a gateway node picks a target
-core node by randomly pick a core node in the discovered list to issue `gen_rpc`
-call, and towards the picked core node, use `{ClientId, Topic}` as the `gen_rpc`
-[shard key](https://github.com/priestjim/gen_rpc#per-key-sharding).
+When publishing messages from gateway to core, the gateway node hashes the
+topic name to one of the discovered core nodes to issue `gen_rpc` call.
+
+In the `gen_rpc` call, it may use client ID as the [shard key](https://github.com/priestjim/gen_rpc#per-key-sharding).
+
+The per topic-clientId sharding is to ensure the message order.
 
 #### Core to Gateway
 
-Upon receiving a subscription from MQTT client, a gateway node should
-update the subscription and trie tables locally. It should also forward the
-tuple `{RegID, MaybeWildcardTopic}` to the core network.
+Upon receiving a subscription from MQTT client, a gateway node should update
+the subscription and trie tables locally. It should also forward the tuple
+`{RegID, MaybeWildcardTopic}` to the core network.
 Such forward could be a `gen_rpc` call to a random core node, the core network
 should ensure this subscription is replicated to all core nodes the core
 network.
 
 When publishing a message, a core node should lookup in the routing tables
-to find all recipients including `Pid` (subscription within the core network)
-or `RegID` (subscription from gateway nodes).
+to find all recipients which can be either:
+
+* A `Pid` -- subscription within the core network
+
+* An `RegID` --- subscription from a gateway node.
+
 For local subscriptions, core node publishes the message as how it's handled
-today. For remote subscriptions, the core node:
+today. For subscriptions in gateway nodes, the core node:
 
 1. Look up gateway node's `gen_rpc` endpoint from the `RegID`;
 
