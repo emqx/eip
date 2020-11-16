@@ -24,7 +24,7 @@ is to scale the number of brokers up to 1,000 nodes.
 
 ## Rationale
 
-The distributed system improves it scalability by adding more nodes to handle
+A distributed system improves it scalability by adding more nodes to handle
 the growing amount of requests, but it also introduces more complexities,
 especially when we have to maintain states across multiple nodes.
 
@@ -73,9 +73,8 @@ gateway nodes, and the (stateful) core nodes.
   create or destroy a node in morden service orchestration platforms such as
   AWS and k8s.
 
-The core cluster in such a cluster may work like an opaque network to serve both
-MQTT clients and the gateway nodes. And there can be a load balancer dispatching
-load from clients to different gateway nodes.
+To the gateway nodes, the core nodes should work like a database or storage
+engine which helps sharing persisted states globally.
 
 ```
                  [Gateway Nodes] | [Core Nodes]
@@ -117,7 +116,7 @@ The core network is a fully meshed Erlang cluster. This may change in the future
 when we employee other protocols such as gossip for data replication.
 Messages are passed using Erlang distribution.
 
-#### Discovery of Core nodes
+#### Discovery of Core nodes by Gateway nodes
 
 At start/restart, a gateway node should issue a registration request,
 announcing its presence to (random) one of the core nodes.
@@ -145,39 +144,38 @@ Depending on the capacity of a gateway node, there could be a very large number
 of topics pointing to the same gateway, so it makes sense to have a compact
 value (integer) instead of the full `host:port` string for its reference.
 
-#### Gateway to Core
+#### Broking messages
 
-When publishing messages from gateway to core, the gateway node hashes the
-topic name to one of the discovered core nodes to issue `gen_rpc` call.
+The subscription info is the data related to the mapping from topics to
+subscribers. The subscription info may involve the following tables:
 
-In the `gen_rpc` call, it may use client ID as the [shard key](https://github.com/priestjim/gen_rpc#per-key-sharding).
+- Subscriber table:
+  Maintains the mapping from TopicFilter -> SubPid | RegID
+  SubPid implies a local subscription.
+  RegID points to a remote node.
 
-The per topic-clientId sharding is to ensure the message order.
+- Trie table:
+  Used for matching a TopicName to all the possible wildcard topic-filters in
+  the system.
 
-#### Core to Gateway
+When MQTT client subscribes to a node (gateway or core), the node frist updates
+its local routing tables, then forward the subscription information to the core
+cluster if it is a gateway node. Within the core cluster, all routing
+inforamtion is replicated to all core nodes.
 
-Upon receiving a subscription from MQTT client, a gateway node should update
-the subscription and trie tables locally. It should also forward the tuple
-`{RegID, MaybeWildcardTopic}` to the core network.
-Such forward could be a `gen_rpc` call to a random core node, the core network
-should ensure this subscription is replicated to all core nodes the core
-network.
+When MQTT client publishes messages, the target topic is used to query for
+subscribers both locally (the 'Local' subscribers) and remotely (the 'Remote'
+subscribers). When it is a local subscriber, the query should return the
+subscriber connection's Erlang pid. When it's a remote subscriber, the query
+should return the node ID.
 
-When publishing a message, a core node should lookup in the routing tables
-to find all recipients which can be either:
+Upon a node (gateway or core) receiving messages from publishers, the node
+should query for both local and remote subscribers. For local subscribers,
+the messages are forwarded using erlang:send. For remote subscribers,
+messages can be batched for a `gen_rpc` call towards the remote node.
 
-* A `Pid` -- subscription within the core network
-
-* An `RegID` --- subscription from a gateway node.
-
-For local subscriptions, core node publishes the message as how it's handled
-today. For subscriptions in gateway nodes, the core node:
-
-1. Look up gateway node's `gen_rpc` endpoint from the `RegID`;
-
-2. Issues a `gen_rpc` call towards the gateway node endpoint.
-
-A demo full flow is illustrated in the chart below
+When issuing `gen_rpc` calls, we can use `{ClientId, Topic}` as the `gen_rpc`
+[shard key](https://github.com/priestjim/gen_rpc#per-key-sharding).
 
 ![chart](0005-stateless-brokers.png)
 
@@ -298,45 +296,6 @@ core nodes ar easier than doing that between the gateway nodes.
     | emqx_acl | global-disc  | {emqx_acl, Login, Topic, Action, Allow} |  |
     | scram_auth | global-disc  | {scram_auth, Username, StoredKey, ServerKey, Salt, IterationCount} |  |
     | emqx_retainer | global-disc  | {retained, Topic, Msg, ExpiryTime} |  |
-
-### Handling of Subscriptions, Routing and Publishing
-
-The subscription info is the data related to the mapping from topics to
-subscribers. The subscription info may involve the following tables:
-
-- Subscriber table:
-  Maintains the mapping from TopicFilter -> SubPid | RegID
-  SubPid implies a local subscription.
-  RegID points to a gateway node.
-
-- Trie table:
-  Used for matching a TopicName to all the possible wildcard topic-filters in
-  the system.
-
-A gateway node manages its MQTT clients and subscriptions locally.
-On the other hand, a gateway node acts as an MQTT client to the core nodes.
-From this point of view a core node is the "broker" of the gateway nodes.
-
-The overall design goal is to make sure that:
-
-1. Clients that are connected to the same gateway node are able to communicate
-   with each other without needing to forward messages to core nodes.
-
-2. Clients that are connected to different gateway nodes are able to
-   communicate with each other through the core network.
-
-3. The persistent sessions are stored in the core network, but for
-   non-persistent sessions, it should be stored in gateway nodes for
-   performance reasons.
-
-4. `gen_rpc` connections between gateway and core nodes may make use of
-   the [sharding](https://github.com/priestjim/gen_rpc#per-key-sharding)
-   feature for better throughput and latency. The sharding key is topic name.
-
-When a client publishes a message, the gateway node first dispatches the
-messages to all the subscribers connected locally, then it sends the message
-to the core network and let the connected core node to relay the messages to
-other gateway nodes (or MQTT clients connected directly to the core network).
 
 ### Core Network Federation
 
