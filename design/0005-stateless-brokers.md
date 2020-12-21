@@ -1,7 +1,7 @@
 # Stateless Brokers in EMQ X v5.0
 
 ```
-Author: Shawn <liuxy@emqx.io>
+Author: Stone <stone@emqx.io>, Shawn <liuxy@emqx.io>
 Status: Draft
 Type: Design
 Created: 2020-10-27
@@ -39,7 +39,7 @@ distributed locking might be necessary, but it may significantly affect the
 performance of session creation.
 
 All the above problems limit the scalability of EMQX clusters. we propose to
-splist the cluster to two parts:
+split the cluster to two parts:
 
 1. Confine the state mutations in a relatively small, stateful cluster
    (the core cluster)
@@ -70,7 +70,7 @@ gateway nodes, and the (stateful) core nodes.
   from MQTT clients. Without having to do the booking work like the core nodes
   it should allow such node to be tuned for dedicating resources to serve
   the clients. It's statelessness should also make it easier and quicker to
-  create or destroy a node in morden service orchestration platforms such as
+  create or destroy a node in modern service orchestration platforms such as
   AWS and k8s.
 
 To the gateway nodes, the core nodes should work like a database or storage
@@ -158,10 +158,10 @@ subscribers. The subscription info may involve the following tables:
   Used for matching a TopicName to all the possible wildcard topic-filters in
   the system.
 
-When MQTT client subscribes to a node (gateway or core), the node frist updates
+When MQTT client subscribes to a node (gateway or core), the node first updates
 its local routing tables, then forward the subscription information to the core
 cluster if it is a gateway node. Within the core cluster, all routing
-inforamtion is replicated to all core nodes.
+information is replicated to all core nodes.
 
 When MQTT client publishes messages, the target topic is used to query for
 subscribers both locally (the 'Local' subscribers) and remotely (the 'Remote'
@@ -184,22 +184,17 @@ When issuing `gen_rpc` calls, we can use `{ClientId, Topic}` as the `gen_rpc`
 The benefit of this architecture is that we could set up thousands of gateway
 nodes without needing to keep a global view of the nodes.
 Adding/Removing a gateway is simplified because of their statelessness.
-The drawback is that messages forwarding between gateway nodes have to go
-through the core network.
 
-However, considering that we may need to maintain message queues in the core
-nodes for persistent sessions, this starts making sense because we would have
-to pass the messages to the core nodes for queuing anyway.
+The drawback is that to publish a message to another node, we have to fetch all
+the subscribers from the core nodes, this may causes some delay and extra
+overhead, especially under a high load. We could improve this by adding a
+caching mechanism but this will lost the ability of real-time messaging.
 
-Messages sent between the gateway and core nodes can be batched for higher
-throughput.
-
-Another benefit of this approach is that we could set up connections between
-multiple geographically deployed core clusters to enable the cross data-center
-message passing. In this case, only the core nodes will require direct
-connectivity from one core cluster to another. It's nice as there are probably
-much more gateway nodes than core nodes, so that setting up connections between
-core nodes ar easier than doing that between the gateway nodes.
+Another problem is that storing the sessions in gateway nodes would reduce the
+availability if one or some of the gateway nodes are gone. To solve this we can
+backup the sessions in core nodes, and restore them back when the client gets
+reconnected. But this is at the cost of having to synchronizing the session
+state and the message queues between gateway nodes and core nodes.
 
 ### Mnesia/ETS Tables
 
@@ -290,7 +285,7 @@ core nodes ar easier than doing that between the gateway nodes.
     | emqx_banned | local-ram  | {banned, Who, By, Reason, At, Until}  |    |
     | emqx_telemetry | global-disc  | {telemetry, Id, UUID, Enabled} |  |
     | emqx_rule | global-disc  | {rule, ID, For, RawSQL, IsForeach, Fields, DoEach, InCase, Conditions, OnActionFailed, Actions, Enabled, Descr} |  |
-    | mqtt_admin | global-disc  | {mqtt_amdin, Username, Password, Tags} |  |
+    | mqtt_admin | global-disc  | {mqtt_admin, Username, Password, Tags} |  |
     | mqtt_app | global-disc  | {mqtt_app, Id, Secret, Name, Desc, Status, Expired} |  |
     | emqx_user | global-disc  | {emqx_user, Login, Password, IsSuperUser} |  |
     | emqx_acl | global-disc  | {emqx_acl, Login, Topic, Action, Allow} |  |
@@ -304,10 +299,10 @@ two core networks can be federated using the same mechanism as a core network
 serving multiple gateway nodes.
 
 That is, for topics of interest for federation, one or more nodes in Net2
-may subscribe to Net1 as if it is a gateway node, and viceversa.
+may subscribe to Net1 as if it is a gateway node, and vice-versa.
 
 The only exception is that there is no client ID given in the federation
-subscription requests, so the network acceptin the subscription does not have
+subscription requests, so the network accepting the subscription does not have
 to suddenly expand its database to include all client IDs.
 This implies a client (or a gateway node) is able to subscribe in both networks.
 
@@ -318,7 +313,7 @@ Interval`. A session consists of:
 
 - The session state:
 
-  RocksDB Table: session_state
+  RocksDB Table (Core Nodes): session_state
 
   ```
   client: "c1"  ## the key of the table
@@ -331,7 +326,7 @@ Interval`. A session consists of:
 
 - The message queue that is pending to be sent to the client:
 
-  RocksDB Table: message_queue
+  RocksDB Table (Core Nodes): message_queue
 
   ```
   key: {client: "c1", topic: "t/1", qos: 2}
@@ -340,7 +335,7 @@ Interval`. A session consists of:
 
 - The inflight queue the has been sent to the client but not ACKed:
 
-  RocksDB Table: inflight_queue
+  RocksDB Table (Core Nodes): inflight_queue
 
   ```
   key: {client: "c1", topic: "t/1", qos: 2}
@@ -349,41 +344,23 @@ Interval`. A session consists of:
 
 - The QoS2 message received but not completed:
 
-  RocksDB Table: incomplete_qos2_msgs
+  RocksDB Table (Core Nodes): incomplete_qos2_msgs
 
   ```
   key: {client: "c1", topic: "t/1"}
   msgs: [msg1, msg2]
   ```
 
-One session is split to several tables here. The session_state is always stored
-in the tables, no matter it is a persistent session or not.
-We keep session states in the core cluster simply because the gateway
-nodes do not have the global view of client's uniqueness in the whole network.
-
-We also store a copy of the message queues and inflight queues for the
-persistent session in core nodes, as we have to keep a long-lived state and
-messages for the client, without worrying about the creation/destroy of the
-gateway nodes.
-
-The other tables are only necessary when the session is persistent, and they
-are only located in the core nodes.
-
-The message queues and inflight queues are maintained by the MQTT connection
-process located in the gateway nodes, we call it "active" message queue or
-"active" inflight queue. The copy of the queues are created/updated while the
-messages are passing through the core nodes. When the persistent client
-subscribes a topic, the gateway also subscribes the topic-filter to the core
-nodes with a "persistent" flag. So if a matched PUBLISH message comes, it
-will be queued in the core node.
+If we need to store persistent sessions into core nodes, we could split a
+session into several tables in core nodes. The sessions in the gateway nodes
+(maybe stored in the `emqx_connection` processes) will be synchronized with
+these tables.
 
 ### Retained Messages
 
-The retained messages are stored in core nodes and also partitioned by topic
-like the persistent message queues. Unlike the retained message queue,
-only the latest retained message will be stored on a specific topic.
-When a client subscribes to the topic-filter, the retained message will be sent
-to the client.
+The retained messages are stored in core nodes and can be partitioned by topic.
+When a client subscribes to the topic, the retained message will be sent to the
+client.
 
 ### State Management of Other Protocols
 
