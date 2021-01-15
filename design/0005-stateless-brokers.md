@@ -1,7 +1,7 @@
 # Stateless Brokers in EMQ X v5.0
 
 ```
-Author: Stone <stone@emqx.io>, Shawn <liuxy@emqx.io>
+Author: Zaiming Shi <zaiming.shi@emqx.io>, Shawn <liuxy@emqx.io>
 Status: Draft
 Type: Design
 Created: 2020-10-27
@@ -24,7 +24,7 @@ is to scale the number of brokers up to 1,000 nodes.
 
 ## Rationale
 
-A distributed system improves it scalability by adding more nodes to handle
+A distributed system improves its scalability by adding more nodes to handle
 the growing amount of requests, but it also introduces more complexities,
 especially when we have to maintain states across multiple nodes.
 
@@ -73,9 +73,6 @@ gateway nodes, and the (stateful) core nodes.
   create or destroy a node in modern service orchestration platforms such as
   AWS and k8s.
 
-To the gateway nodes, the core nodes should work like a database or storage
-engine which helps sharing persisted states globally.
-
 ```
                  [Gateway Nodes] | [Core Nodes]
                                  |
@@ -103,12 +100,9 @@ engine which helps sharing persisted states globally.
 
 ### Cluster and communication between nodes
 
-There's no clustering for gateway nodes. In other words, the gateway nodes do
-not communicate with each other, but only through the core nodes.
-
-Gateway nodes and core nodes communicate over `gen_rpc`, either side can be
-both caller and callee. `gen_rpc` may reuse the underlying tcp connections
-but logically the communication is unidirectional.
+A gateway node communicate with another gateway node or a core node over
+`gen_rpc`. Either side can be both caller and callee. `gen_rpc` may reuse the
+underlying tcp connections but logically the communication is unidirectional.
 
 #### Core Node to Core node
 
@@ -126,23 +120,18 @@ response.
 The registration API could be HTTP(S) to make management easier. e.g.
 
 ```
-curl -XPOST http://core-1:12333/register?endpoint=gateway-1:2333
+curl -XPOST http://core.example.net/register?name=emqx@gw-1.example.net
 ```
 
-This command registers endpoint `gateway-1:2333` to the core network so the
+This command registers node `emqx@gw-1.example.net` to the core network so the
 core nodes can send `gen_rpc` messages for publishing messages to the gateway.
 In the reply, HTTP body may look like:
 
 ```
-{"reg_id":1, "core_nodes": ["core-1:2333","core-2:2333"]}
+{"core_nodes": ["emqx@core-1.example.net","emqx@core-2.example.net"]}
 ```
 
-Where "reg_id" is an integer assigned by the core cluster.
-This ID should be a globally unique integer replicated to all core nodes.
-
-Depending on the capacity of a gateway node, there could be a very large number
-of topics pointing to the same gateway, so it makes sense to have a compact
-value (integer) instead of the full `host:port` string for its reference.
+Fro secrity reasons, there should be authentication for HTTP(S) API.
 
 #### Broking messages
 
@@ -150,9 +139,9 @@ The subscription info is the data related to the mapping from topics to
 subscribers. The subscription info may involve the following tables:
 
 - Subscriber table:
-  Maintains the mapping from TopicFilter -> SubPid | RegID
+  Maintains the mapping from TopicFilter -> SubPid | NodeNameAtom
   SubPid implies a local subscription.
-  RegID points to a remote node.
+  NodeNameAtom points to a remote node.
 
 - Trie table:
   Used for matching a TopicName to all the possible wildcard topic-filters in
@@ -161,13 +150,13 @@ subscribers. The subscription info may involve the following tables:
 When MQTT client subscribes to a node (gateway or core), the node first updates
 its local routing tables, then forward the subscription information to the core
 cluster if it is a gateway node. Within the core cluster, all routing
-information is replicated to all core nodes.
+information is replicated to all core nodes using mnesia transactions.
 
 When MQTT client publishes messages, the target topic is used to query for
 subscribers both locally (the 'Local' subscribers) and remotely (the 'Remote'
 subscribers). When it is a local subscriber, the query should return the
 subscriber connection's Erlang pid. When it's a remote subscriber, the query
-should return the node ID.
+should return the node name (atom).
 
 Upon a node (gateway or core) receiving messages from publishers, the node
 should query for both local and remote subscribers. For local subscribers,
@@ -181,14 +170,17 @@ When issuing `gen_rpc` calls, we can use `{ClientId, Topic}` as the `gen_rpc`
 
 #### Benefits
 
-The benefit of this architecture is that we could set up thousands of gateway
-nodes without needing to keep a global view of the nodes.
+The benefit of this architecture is that we can scan up the number of gateway
+nodes without joining the full-mesh Erlang distribution network.
 Adding/Removing a gateway is simplified because of their statelessness.
 
-The drawback is that to publish a message to another node, we have to fetch all
-the subscribers from the core nodes, this may causes some delay and extra
-overhead, especially under a high load. We could improve this by adding a
-caching mechanism but this will lost the ability of real-time messaging.
+The drawback is that in order to publish a message from a gateway node to
+another, we have to fetch routing records from the core nodes, this may causes
+some extra delay, especially when the core nodes are under heavy load.
+
+An async replication of the routing tables from core to gateway may mitigate
+the increased latency, however this will demand more RAM capacity from
+the gateway nodes. See proposal 0004.
 
 Another problem is that storing the sessions in gateway nodes would reduce the
 availability if one or some of the gateway nodes are gone. To solve this we can
