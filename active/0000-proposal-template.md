@@ -1,11 +1,10 @@
 # An Example of EMQ X Improvement Proposal
 
-```
-Author: yourname <yourname@some.domain>
-Status: Draft
-First Created: 2020-10-21
-EMQ X Version: 5.0
-```
+## Change log
+
+* 2020-10-21: @emqxplus Initial draft
+* 2020-02-05: @terry-xiaoyu Restructure
+* 2021-02-21: @zmstone Add 'Declined Alternatives' section
 
 ## Abstract
 
@@ -41,3 +40,11 @@ If there is any document change, give a brief description of it here.
 The final implementation must include unit test or common test code. If some
 more tests such as integration test or benchmarking test that need to be done
 manually, list them here.
+
+## Declined Alternatives
+
+Here goes which alternatives were discussed but considered worse than the current.
+It's to help people understand how we reached the current state and also to
+prevent going through the discussion again when an old alternative is brought
+up again in the future.
+
