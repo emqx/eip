@@ -1,13 +1,8 @@
 # Async Mnesia transaction replication in EMQ X 5.0
 
-```
-Author: Zaiming Shi <zaiming.shi@emqx.io>
-Status: Draft
-Type: Design
-Created: 2020-10-21
-EMQ X Version: 5.0
-Post-History:
-```
+## Change log
+
+* 2021-02-21: @zmstone Add more details
 
 ## Abstract
 
@@ -80,7 +75,7 @@ Where `Changes` is essentially a list of table operations like:
 ]
 ```
 
-* Fetch change logs from non-clustered nodes
+* Non-clustered nodes fetch change logs from cluster.
 
 Nodes outside of the Mnesia can make use of `gen_rcp` to fetch changes from
 the Mnesia cluster nodes.
@@ -93,4 +88,34 @@ all the changes from the very beginning.
 An empty node will have to fetch all the records from Mnesia before applying
 the realtime change logs.
 
-TODO: add implementation details.
+## Configuration Changes
+
+Two new configuration needs to be added to emqx.conf:
+
+1. `node_role`: enum [`core`, `replicant`]
+2. `core_nodes`: a list of core nodes for a `replicant` node to 'watch'
+   and from which transaction logs are fetched.
+
+## Backwards Compatibility
+
+A `replicant` node should never originate data `write`s and `delete`s.
+Due to the fact that the nodes are still all clustered using erlang
+distribution. So some of the `rpc`s, (such cluster_call) should not be made
+towards the replicat nodes if they are intended for writes.
+
+## Document Changes
+
+1. New clustering setup guide
+2. Update configuration doc for new confg entries
+
+## Testing Suggestions
+
+1. Regression: clusting test in github actions.
+2. Functionality: generate data operations (write and delte),
+   apply operations and compare data integrity between core and replicat nodes
+3. Performance: benchmark throughput and latency
+
+## Declined Alternatives
+
+* `riak_core` was the original proposal, it's decliend because the change is
+  considered too radical for the next release. We may re-visit it in the future.
