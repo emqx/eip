@@ -49,4 +49,9 @@ in `emqx-plugin-template`.
 
  ## Testing Suggestions
 
+Suppose we have approved a third-party plugin `emqx-some-plugin`.
+Since we have an umbrella project in v4.3, 
+The developers of `emqx-some-plugin` is going to run the test
+by placing it to emqx.git, for example in `_checkouts` dir.
 
+In `emqx-some-plugin`'s CI, they have to fetch emqx.git then run the test.
