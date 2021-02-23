@@ -41,7 +41,11 @@ Then `rebar.config.erl` read the file and the environment variables, to include 
 
  ## Document Changes
 
+In `emqx-doc`, there should be detailed information
+on how to use third-party plugins.
 
+Add detailed information on how one can develop their own plugins
+in `emqx-plugin-template`.
 
  ## Testing Suggestions
 
