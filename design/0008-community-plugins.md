@@ -18,19 +18,19 @@ To achieve this, it is nice to `approve` some community plugins and let people u
 
 ## Design
 
-In rebar.config.erl, we can add a list of approved community plugins.
+At the root of emqx.git, we add the file `community-plugins`, 
+where we list approved community plugins.
+(the advantage of having it in a separate file is to keep minimum lines of such in `rebar.config.erl`
+which may otherwise cause more lines of conflicts when porting changes to enterprise.)
 
 ```erlang
-community_deps() ->
-    [
-      {foo_plugin, {git, "https://github.com/###"}}
-    , {bar_plugin, {git, "https://github.com/###"}} 
-    ].
+[ {foo_plugin, {git, "https://github.com/###"}}
+, {bar_plugin, {git, "https://github.com/###"}} ].
 ```
 
 And when a user would like to use one of them, 
 he/she can do so by setting env variable `EMQX_COMMUNITY_PLUGINS=foo_plugin`.
-
+Then `rebar.config.erl` read the file and the environment variables, to include specified ones.
 
  ## Configuration Changes
 
