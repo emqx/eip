@@ -28,7 +28,8 @@ cluster.consul.server = http://127.0.0.1:8500
 cluster.consul.prefix = emqcl
 ```
 
-may want to look at adding support for consul authentication as well
+may want to look at adding support for consul authentication as well - 
+[auth docs](https://www.consul.io/api-docs#authentication)
 
 ```
 cluster.consul.token = <token value>
