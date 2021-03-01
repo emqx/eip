@@ -3,10 +3,11 @@
 ## Change log
 
 * 2021-02-21: @zmstone Add more details
+* 2021-03-01: @k32 Minor fixes
 
 ## Abstract
 
-Escape from Erlang distribution mesh netowrk, embrace gen_rpc.
+Escape from Erlang distribution mesh network, embrace `gen_rpc`.
 
 ## Motivation
 
@@ -70,27 +71,27 @@ end.
 Where `Changes` is essentially a list of table operations like:
 
 ```
-[ {{TalbeName, Key}, Record, write},
+[ {{TableName, Key}, Record, write},
   {{TableName, Key}, Record, delete}
 ]
 ```
 
 * Non-clustered nodes fetch change logs from cluster.
 
-Nodes outside of the Mnesia can make use of `gen_rcp` to fetch changes from
+Nodes outside of the Mnesia can make use of `gen_rpc` to fetch changes from
 the Mnesia cluster nodes.
 
-### Bootstraping Empty Nodes
+### Bootstrapping Empty Nodes
 
 The Mnesia logs should have a limited retention, so it is impossible to keep
 all the changes from the very beginning.
 
 An empty node will have to fetch all the records from Mnesia before applying
-the realtime change logs.
+the real-time change logs.
 
 ## Configuration Changes
 
-Two new configuration needs to be added to emqx.conf:
+Two new configuration needs to be added to `emqx.conf`:
 
 1. `node_role`: enum [`core`, `replicant`]
 2. `core_nodes`: a list of core nodes for a `replicant` node to 'watch'
@@ -101,21 +102,21 @@ Two new configuration needs to be added to emqx.conf:
 A `replicant` node should never originate data `write`s and `delete`s.
 Due to the fact that the nodes are still all clustered using erlang
 distribution. So some of the `rpc`s, (such cluster_call) should not be made
-towards the replicat nodes if they are intended for writes.
+towards the replicant nodes if they are intended for writes.
 
 ## Document Changes
 
 1. New clustering setup guide
-2. Update configuration doc for new confg entries
+2. Update configuration doc for new config entries
 
 ## Testing Suggestions
 
-1. Regression: clusting test in github actions.
-2. Functionality: generate data operations (write and delte),
-   apply operations and compare data integrity between core and replicat nodes
+1. Regression: clustering test in github actions.
+2. Functionality: generate data operations (write and delete),
+   apply operations and compare data integrity between core and replicant nodes
 3. Performance: benchmark throughput and latency
 
 ## Declined Alternatives
 
-* `riak_core` was the original proposal, it's decliend because the change is
+* `riak_core` was the original proposal, it's declined because the change is
   considered too radical for the next release. We may re-visit it in the future.
