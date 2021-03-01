@@ -1,4 +1,4 @@
-# Community Plugins
+## Community Plugins
 
 ```
 Author: Yudai Kiyofuji <yudai.kiyofuji@emqx.io>
@@ -6,6 +6,11 @@ Status: Draft
 First Created: 2021-02-21
 EMQ X Version: 4.3
 ```
+
+## Change log
+
+* 2021-02-23: @z8674558 Initial draft
+* 2021-02-25: @z8674558 Add proposal on elixir plugins
 
 ## Abstract
 
@@ -24,13 +29,21 @@ where we list approved community plugins.
 which may otherwise cause more lines of conflicts when porting changes to enterprise.)
 
 ```erlang
-[ {foo_plugin, {git, "https://github.com/###"}}
-, {bar_plugin, {git, "https://github.com/###"}} ].
+{erlang_plugins, [{foo_plugin, {git, "https://github.com", {tag, "1.0.0"}}}}]}.
 ```
 
 And when a user would like to use one of them, 
 he/she can do so by setting env variable `EMQX_COMMUNITY_PLUGINS=foo_plugin`.
 Then `rebar.config.erl` read the file and the environment variables, to include specified ones.
+
+### Elixir Plugins
+
+Considering the recent popularity of Elixir, we have decided to continue supporting Elixir plugins in v4.3.
+At the end of `community-plugins` file, there should be
+
+```erlang
+{elixir_plugins, [{bar_plugin, {git, "https://github.com", {tag, "1.0.0"}}}}]}.
+```
 
  ## Configuration Changes
 
@@ -45,7 +58,7 @@ In `emqx-doc`, there should be detailed information
 on how to use third-party plugins.
 
 Add detailed information on how one can develop their own plugins
-in `emqx-plugin-template`.
+in `emqx-plugin-template` and `emqx-elixir-plugin`.
 
  ## Testing Suggestions
 
