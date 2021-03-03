@@ -21,7 +21,7 @@ Therefore it has a better chance of capturing the relevant data.
 ## Design
 
 Currently, `system_monitor` is designed to publish the telemetry to Kafka, which is not suitable for EMQX.
-This design can be simplified, and the telemetry data should be written to the local log files instead.
+This design can be simplified, and the telemetry data should be written to the local log files managed by OTP kernel `logger` instead.
 "Abnormal node state" detection can be incorporated into `system_monitor` to reduce the size of the log files: `system_monitor` should only log data when BEAM schedulers are saturated.
 
 Example log entry format:
