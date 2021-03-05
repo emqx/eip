@@ -1,5 +1,11 @@
 # Support Consul for cluster discovery
 
+```
+Author: <John Roesler> <johnrroesler@gmail.com>
+Status: Draft
+Created: 2021-03-05
+```
+
 ## Abstract
 
 Cluster discovery should support Consul as an option to store and lookup node details.
