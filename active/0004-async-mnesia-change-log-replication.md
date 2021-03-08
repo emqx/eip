@@ -110,6 +110,14 @@ all the changes from the very beginning.
 An empty node will have to fetch all the records from Mnesia before applying
 the real-time change logs.
 
+### Zombie fencing in push model
+
+In push model, a replicat node should make sure *not* to ingest transaction pushes from a stale core node which may have a zombie agent lingering around.
+i.e. A replicant node should 'remember' which node it is watching, and upon receiving transactions from an unknown node,
+it should reply with a rejection error message for the push calls.
+
+With this implementation, there should not be a need for the core nodes to coordinate with each other.
+
 ## Configuration Changes
 
 Two new configuration needs to be added to `emqx.conf`:
