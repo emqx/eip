@@ -84,7 +84,7 @@ Therefore traversing the rlog table twice can lead to different results.
 
 * Non-clustered nodes fetch change logs from cluster.
 
-Nodes outside of the Mnesia can make use of `gen_rpc` to fetch changes from
+Nodes outside of the Mnesia cluster can make use of `gen_rpc` to fetch changes from
 the Mnesia cluster nodes.
 
 There are two possible models of interaction between core and replicant:
