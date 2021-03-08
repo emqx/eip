@@ -93,7 +93,7 @@ There are two possible models of interaction between core and replicant:
 
   Replicant nodes issue a `watch` call to one of the core nodes.
   The core node creates an agent process that issues `gen_rpc` calls to the replicant nodes using data about transactions that were recorded to the rlog table.
-  Once the replication is close to the end of the rlog table, the agent process subscribes to mnesia events to the rlog table and start feeding the replicant with realtime stream of OPs. 
+  Once the replication is close to the end of the rlog table, the agent process subscribes to mnesia events to the rlog table and start feeding the replicant with realtime stream of OPs.
   The time threshold to identify 'close to the end of rlog' should be configurable, and realtime stream should start after (with maybe a bit overlapping) the agent reaches the `$end_of_table`
 
 - Pull model:
@@ -109,6 +109,32 @@ all the changes from the very beginning.
 
 An empty node will have to fetch all the records from Mnesia before applying
 the real-time change logs.
+
+Bootstrapping can be done in a few different ways:
+
+- Using mnesia checkpoints is the easiest option, that guarantees consistent results.
+  Mnesia checkpoint is a standard feature that is used, for example, to perform backups.
+  Core node can activate a local checkpoint containing all the tables needed for the shard, and then iterate through it during bootstrap process.
+  Records from the mnesia checkpoint can be sent in batches using the same protocol as the online replication.
+
+  This solution has downsides, though:
+
+  + Checkpoints take non-trivial amount of resources and may slow down Mnesia: in order to make the checkpoint consistent, mnesia spawns a retainer process and installs a hook before the transaction commits.
+    This hook forwards values of the records to the retainer process, before they are overwritten.
+    Retainer process saves the values of the old records in a separate table.
+    Given that the snapshot is going to be updated with all the recent transactions as soon as bootstrapping completes, this is excessive.
+
+  + Checkpoint API in mnesia is designed in imperative style, and lifetime management of the checkpoints can be nontrivial, considering that core nodes can restart, replicant nodes can reconnect, and so on.
+
+- Use dirty operations to bootstrap the node.
+  Transaction log has an interesting property: replaying it can heal a partially corrupted replica.
+  Transaction log replay can fix missing or reordered updates and deletes, as long as the replica has been consistent prior to the first replayed transaction.
+  This healing property of the TLOG can be used to bootstrap the replica using only dirty operations. (TODO: prove it)
+  One downside of this approach is that the replica contains subtle inconsistencies during the replay, and cannot be used until the replay process finishes.
+  It should be mandatory to shutdown business applications while bootstrap and syncing are going on.
+
+- TBD: reverse-engineer `mnesia:add_table_copy` function, in order to make a copy that doesn't update the schema to include replicant nodes in the core cluster.
+  This could be difficult, since this operation propagates to the cluster via schema transaction.
 
 ### Zombie fencing in push model
 
