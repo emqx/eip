@@ -4,6 +4,7 @@
 
 * 2021-02-21: @zmstone Add more details
 * 2021-03-01: @k32 Minor fixes
+* 2021-03-05: @k32 Add more test scenarios and elaborate on the push model.
 
 ## Abstract
 
@@ -61,8 +62,10 @@ transaction(Fun, Args) ->
   Fun2 = fun() ->
     ok = Fun(Args),
     Changes = get_mnesia_activity(),
-    Ts = now(),
-    ok = write_changes_in_another_table(Ts, Changes),
+    Key = generate_key(erlang:timestamp(), node()),
+    %% Note: Real code should avoid traversing Ops list multiple times:
+    [ok = write_ops_to_another_table(Shard, Key, find_ops_for_shard(Ops, Shard)) || Shard <- shards()],
+    ok
   end,
   {atomic, ok} = mnesia:transaction(Fun2)
 end.
@@ -76,10 +79,28 @@ Where `Changes` is essentially a list of table operations like:
 ]
 ```
 
+Note: transactions running on different nodes in the cluster can be recorded to the rlog table out-of-order.
+Therefore traversing the rlog table twice can lead to different results.
+
 * Non-clustered nodes fetch change logs from cluster.
 
-Nodes outside of the Mnesia can make use of `gen_rpc` to fetch changes from
+Nodes outside of the Mnesia cluster can make use of `gen_rpc` to fetch changes from
 the Mnesia cluster nodes.
+
+There are two possible models of interaction between core and replicant:
+
+- Push model:
+
+  Replicant nodes issue a `watch` call to one of the core nodes.
+  The core node creates an agent process that issues `gen_rpc` calls to the replicant nodes using data about transactions that were recorded to the rlog table.
+  Once the replication is close to the end of the rlog table, the agent process subscribes to mnesia events to the rlog table and start feeding the replicant with realtime stream of OPs. 
+  The time threshold to identify 'close to the end of rlog' should be configurable, and realtime stream should start after (with maybe a bit overlapping) the agent reaches the `$end_of_table`
+
+- Pull model:
+
+  Replicant nodes issue `gen_rpc` calls to one of the core nodes with the latest transaction key it has locally.
+  The core node replies with the list of transactions that happened since.
+  This model is simpler, but it introduces latency and it's more prone to missing transactions from different core nodes due to the reordering problem mentioned above.
 
 ### Bootstrapping Empty Nodes
 
@@ -112,9 +133,16 @@ towards the replicant nodes if they are intended for writes.
 ## Testing Suggestions
 
 1. Regression: clustering test in github actions.
-2. Functionality: generate data operations (write and delete),
+1. Functionality: generate data operations (write and delete),
    apply operations and compare data integrity between core and replicant nodes
-3. Performance: benchmark throughput and latency
+1. Performance: benchmark throughput and latency
+1. Regression: test clock skews.
+
+   1. Create a cluster of two core nodes (A and B) and a replicant node C.
+   1. Set time to the future on one of the core nodes, say A
+   1. Restart the replicant node, make sure A node detects that first and removes the routes to C
+   1. Immediately connect some clients to the replicant node
+   1. Check that the replicant node didn't lose its own routes after replaying the transactions from the rlog
 
 ## Declined Alternatives
 
