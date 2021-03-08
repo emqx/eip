@@ -92,7 +92,7 @@ There are two possible models of interaction between core and replicant:
 - Push model:
 
   Replicant nodes issue a `watch` call to one of the core nodes.
-  The core node creates a proxy process that issues `gen_rpc` calls to the replicant nodes using data about transactions that were recorded to the rlog table.
+  The core node creates an agent process that issues `gen_rpc` calls to the replicant nodes using data about transactions that were recorded to the rlog table.
   Once the replicant node reaches the end of the rlog table, it subscribes to mnesia events to the tables in the shard.
 
 - Pull model:
