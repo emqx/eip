@@ -17,6 +17,6 @@ demonstrating the format of EIPs.
 It is possible to add UML diagrams using [PlantUML](https://plantuml.com/).
 In order to do this, create a directory called `active/XXXX-assets` (replace
 `XXXX` with the EIP number), and put the files there. All files should have
-`uml` extention.
+`uml` extension.
 
 Then run `make` to generate the images.

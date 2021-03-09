@@ -6,6 +6,7 @@
 * 2021-03-01: @k32 Minor fixes
 * 2021-03-05: @k32 Add more test scenarios and elaborate on the push model.
 * 2021-03-11: @k32 Elaborate transaction key generation
+* 2021-03-11: @k32 Add MSC diagrams for the bootstrap process
 
 ## Abstract
 
@@ -128,24 +129,24 @@ The benefit of this solution is that it allows to use the contents of the `rlog`
 #### RLOG Server
 
 RLOG server is a `gen_server` process that runs on the core node.
-It is responsible for the initial communication with the RLOG replica proceeses, and spawning RLOG agent and RLOG bootstrapper processes.
+It is responsible for the initial communication with the RLOG replica processes, and spawning RLOG agent and RLOG bootstrapper processes.
 
 #### RLOG Agent
 
 RLOG agent is a `gen_statem` process that runs on the core node.
 This processes' lifetime is tied to the lifetime of the remote RLOG replica process.
 It is responsible for pushing the transaction ops from the core node to the replicant node.
-The agent operates in two modes: `catchup` where it reads transactions from the rlog table, and `normal` where it forwards mnesia events for the rlog table.
-There should be a third transient state called `switchover` where the agent subscribes to the mnesia events, while still consuming from the rlog table.
+The agent operates in two modes: `catchup` where it reads transactions from the rlog, and `normal` where it forwards realtime mnesia events.
+There should be a third transient state called `switchover` where the agent subscribes to the mnesia events, while still consuming from the rlog.
 This is to ensure overlap between the stored transactions and the events.
 
-![Agent FSM](0004-assets/agnet-fsm.png)
+![Agent FSM](0004-assets/agent-fsm.png)
 
-#### RLOG Replicant
+#### RLOG Replica
 
-RLOG replicant is a `gen_statem` process that runs on the replicant node.
+RLOG replica is a `gen_statem` process that runs on the replicant node.
 It spawns during the node startup under the `rlog` supervisor, and is restarted indefinitely.
-It talks to the RLOG server in the `init` callback, and establishes connection to the RLOG agent process.
+It talks to the RLOG server in its `init` callback, and establishes connection to the remote RLOG agent process.
 In some cases it also creates a bootstrap client process and manages it.
 
 ![Replicant FSM](0004-assets/replicant-fsm.png)
@@ -154,7 +155,7 @@ In some cases it also creates a bootstrap client process and manages it.
 
 RLOG bootstrapper is a simple `gen_server` process that runs on the core node.
 It is spawned by RLOG server when the replicant node wishes to be bootstrapped.
-RLOG bootstrapper runs `mnesia:dirty_all_keys` operation on the tables within the replica, and then iterates through the cached keys.
+RLOG bootstrapper runs `mnesia:dirty_all_keys` operation on the tables within the shard, and then iterates through the cached keys.
 For each table and key pair it performs `mnesia:dirty_read` operation and caches the result.
 If the value for the key is missing, such record is ignored.
 Records are sent to the remote process in batches.
@@ -180,7 +181,7 @@ It should be mandatory to shutdown business applications while bootstrap and syn
 
 ### Zombie fencing in push model
 
-In push model, a replicat node should make sure *not* to ingest transaction pushes from a stale core node which may have a zombie agent lingering around.
+In push model, a replicant node should make sure *not* to ingest transaction pushes from a stale core node which may have a zombie agent lingering around.
 i.e. A replicant node should 'remember' which node it is watching, and upon receiving transactions from an unknown node,
 it should reply with a rejection error message for the push calls.
 
