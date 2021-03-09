@@ -1,0 +1,11 @@
+@startuml
+
+catchup: Replaying transactions from the rlog table
+switchover: Transient state: buffering realtime events\nwhile still replaying records in the rlog
+normal: Forwarding the rlog table\nmnesia events
+
+[*] --> catchup
+catchup --> switchover : reached a record in the rlog\ntable that is newer than\nnow() - SafeInterval
+switchover --> normal : reached the end of rlog table
+
+@enduml

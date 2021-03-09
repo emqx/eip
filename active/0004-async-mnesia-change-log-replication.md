@@ -123,6 +123,48 @@ It's an open question whether or not this additional latency will hurt the throu
 
 The benefit of this solution is that it allows to use the contents of the `rlog` table in a meaningful way.
 
+### Actors
+
+#### RLOG Server
+
+RLOG server is a `gen_server` process that runs on the core node.
+It is responsible for the initial communication with the RLOG replica proceeses, and spawning RLOG agent and RLOG bootstrapper processes.
+
+#### RLOG Agent
+
+RLOG agent is a `gen_statem` process that runs on the core node.
+This processes' lifetime is tied to the lifetime of the remote RLOG replica process.
+It is responsible for pushing the transaction ops from the core node to the replicant node.
+The agent operates in two modes: `catchup` where it reads transactions from the rlog table, and `normal` where it forwards mnesia events for the rlog table.
+There should be a third transient state called `switchover` where the agent subscribes to the mnesia events, while still consuming from the rlog table.
+This is to ensure overlap between the stored transactions and the events.
+
+![Agent FSM](0004-assets/agnet-fsm.png)
+
+#### RLOG Replicant
+
+RLOG replicant is a `gen_statem` process that runs on the replicant node.
+It spawns during the node startup under the `rlog` supervisor, and is restarted indefinitely.
+It talks to the RLOG server in the `init` callback, and establishes connection to the RLOG agent process.
+In some cases it also creates a bootstrap client process and manages it.
+
+![Replicant FSM](0004-assets/replicant-fsm.png)
+
+#### RLOG bootstrapper
+
+RLOG bootstrapper is a simple `gen_server` process that runs on the core node.
+It is spawned by RLOG server when the replicant node wishes to be bootstrapped.
+RLOG bootstrapper runs `mnesia:dirty_all_keys` operation on the tables within the replica, and then iterates through the cached keys.
+For each table and key pair it performs `mnesia:dirty_read` operation and caches the result.
+If the value for the key is missing, such record is ignored.
+Records are sent to the remote process in batches.
+
+#### bootstrap client
+
+Bootstrap client is a simple `gen_server` process that runs on the replicant node.
+It is spawned by the RLOG replica process when it detects that bootstrapping is needed.
+This process receives batches from the remote RLOG bootstrapper process and applies them to the local table replicas.
+
 ### Bootstrapping Empty Nodes
 
 The transaction logs should have a limited retention, so it is impossible to keep all the changes from the very beginning.
@@ -143,6 +185,11 @@ i.e. A replicant node should 'remember' which node it is watching, and upon rece
 it should reply with a rejection error message for the push calls.
 
 With this implementation, there should not be a need for the core nodes to coordinate with each other.
+
+### Preventing infinite bootstrap / catchup loop
+
+There is a problem of catchup never completing, when bootstrap takes longer than the rlog retention time.
+In order to work around this problem the replicant node shall start consuming transactions from the rlog in parallel with bootstrapping.
 
 ## Configuration Changes
 
