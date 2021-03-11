@@ -82,8 +82,8 @@ Where `Changes` is essentially a list of table operations like:
 
 Changes are pushed to the replicant nodes over `gen_rpc`.
 Replicant nodes issue a `watch` call to one of the core nodes.
-The core node creates an agent process that issues `gen_rpc` calls to the replicant nodes using data about transactions that were recorded to the rlog table.
-Once the replication is close to the end of the rlog table, the agent process subscribes to mnesia events to the rlog table and start feeding the replicant with realtime stream of OPs.
+The core node creates an agent process that issues `gen_rpc` calls to the replicant nodes using data about transactions that were recorded to the rlog.
+Once the replication is close to the end of the rlog, the agent process subscribes to the realtime stream of mnesia events for the rlog table, and starts feeding the replicant with realtime stream of OPs.
 The time threshold to identify 'close to the end of rlog' should be configurable, and realtime stream should start after (with maybe a bit overlapping) the agent reaches the last historical event.
 
 Note that `generate_key` function in the above pseudocode can affect the overall design of the system in a rather fundamental way, so let's consider some alternatives.
