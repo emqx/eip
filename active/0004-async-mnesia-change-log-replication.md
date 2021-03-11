@@ -5,6 +5,7 @@
 * 2021-02-21: @zmstone Add more details
 * 2021-03-01: @k32 Minor fixes
 * 2021-03-05: @k32 Add more test scenarios and elaborate on the push model.
+* 2021-03-11: @k32 Elaborate transaction key generation
 
 ## Abstract
 
@@ -79,62 +80,61 @@ Where `Changes` is essentially a list of table operations like:
 ]
 ```
 
-Note: transactions running on different nodes in the cluster can be recorded to the rlog table out-of-order.
-Therefore traversing the rlog table twice can lead to different results.
+Changes are pushed to the replicant nodes over `gen_rpc`.
+Replicant nodes issue a `watch` call to one of the core nodes.
+The core node creates an agent process that issues `gen_rpc` calls to the replicant nodes using data about transactions that were recorded to the rlog.
+Once the replication is close to the end of the rlog, the agent process subscribes to the realtime stream of mnesia events for the rlog table, and starts feeding the replicant with realtime stream of OPs.
+The time threshold to identify 'close to the end of rlog' should be configurable, and realtime stream should start after (with maybe a bit overlapping) the agent reaches the last historical event.
 
-* Non-clustered nodes fetch change logs from cluster.
+Note that `generate_key` function in the above pseudocode can affect the overall design of the system in a rather fundamental way, so let's consider some alternatives.
 
-Nodes outside of the Mnesia cluster can make use of `gen_rpc` to fetch changes from
-the Mnesia cluster nodes.
+#### Alternative 1: using monotonic timestamp + node id for the key
 
-There are two possible models of interaction between core and replicant:
+This kind of key guarantees uniqueness, but not ordering.
+It can be used to prevent lock conflicts while writing to the rlog table, but it MUST NOT be used to establish the order of events.
+Consider the following situation: there are two core nodes `N1` and `N2`, and a replicant node `N3`.
+Let's use `N1`'s clock as the reference.
+Suppose `N2`'s clock drift is `Dt > 0`.
+Consider the following timeline of events:
 
-- Push model:
+1. At `T1`, `N2` commits a transaction that sets value of key `K` to `V1`, with the transaction key `{T1 + Dt, N2}`
+1. At `T2`, `N1` commits another transaction that sets value of `K` to `V2`, with the transaction key `{T2, N1}`.
+   Suppose `T2 - T1 < Dt`.
+1. `N3` replays the records in the rlog table, and it first replays the transaction `{T2, N1}`, then `{T1 + Dt, N2}`.
+   This leads to inconsistency: value of `K` on the core nodes equals `V2`, but on the replicant nodes it equals `V1`.
 
-  Replicant nodes issue a `watch` call to one of the core nodes.
-  The core node creates an agent process that issues `gen_rpc` calls to the replicant nodes using data about transactions that were recorded to the rlog table.
-  Once the replication is close to the end of the rlog table, the agent process subscribes to mnesia events to the rlog table and start feeding the replicant with realtime stream of OPs.
-  The time threshold to identify 'close to the end of rlog' should be configurable, and realtime stream should start after (with maybe a bit overlapping) the agent reaches the `$end_of_table`
+Therefore traversing the rlog table in the natural key order can lead to inconsistencies and must not be used.
+The rlog table must be used for mnesia events only, and the actual contents of this table can be discarded.
+In order to keep the historical transactions used to bootstrap the replicant, a separate storage is needed.
+It could be a disk log that contains the rlog table events.
+(TODO: How to deal with the gaps in the transaction log while the core node is down?)
 
-- Pull model:
+#### Alternative 2: using a globally (or partially) ordered transaction key
 
-  Replicant nodes issue `gen_rpc` calls to one of the core nodes with the latest transaction key it has locally.
-  The core node replies with the list of transactions that happened since.
-  This model is simpler, but it introduces latency and it's more prone to missing transactions from different core nodes due to the reordering problem mentioned above.
+A naive implementation of the global ordering key can be the following: there is a global server generating transaction keys.
+The keys look like this: `{GenerationId, Counter}`.
+For each shard, there is one core node that runs such server.
+This node is elected using a textbook distributed consensus algorithm.
+Every time the shard key server restarts, `GenerationId` counter increments.
+`Counter` is an integer that is incremented every time anyone talks to the server, and resets to 0 when the server restarts.
+
+The obvious downside of this naive implementation is the additional latency added to the transaction.
+It's an open question whether or not this additional latency will hurt the throughput of the database in a significant way.
+
+The benefit of this solution is that it allows to use the contents of the `rlog` table in a meaningful way.
 
 ### Bootstrapping Empty Nodes
 
-The Mnesia logs should have a limited retention, so it is impossible to keep
-all the changes from the very beginning.
+The transaction logs should have a limited retention, so it is impossible to keep all the changes from the very beginning.
 
-An empty node will have to fetch all the records from Mnesia before applying
-the real-time change logs.
+An empty node will have to fetch all the records from transaction log before applying the real-time change logs.
 
-Bootstrapping can be done in a few different ways:
-
-- Using mnesia checkpoints is the easiest option, that guarantees consistent results.
-  Mnesia checkpoint is a standard feature that is used, for example, to perform backups.
-  Core node can activate a local checkpoint containing all the tables needed for the shard, and then iterate through it during bootstrap process.
-  Records from the mnesia checkpoint can be sent in batches using the same protocol as the online replication.
-
-  This solution has downsides, though:
-
-  + Checkpoints take non-trivial amount of resources and may slow down Mnesia: in order to make the checkpoint consistent, mnesia spawns a retainer process and installs a hook before the transaction commits.
-    This hook forwards values of the records to the retainer process, before they are overwritten.
-    Retainer process saves the values of the old records in a separate table.
-    Given that the snapshot is going to be updated with all the recent transactions as soon as bootstrapping completes, this is excessive.
-
-  + Checkpoint API in mnesia is designed in imperative style, and lifetime management of the checkpoints can be nontrivial, considering that core nodes can restart, replicant nodes can reconnect, and so on.
-
-- Use dirty operations to bootstrap the node.
-  Transaction log has an interesting property: replaying it can heal a partially corrupted replica.
-  Transaction log replay can fix missing or reordered updates and deletes, as long as the replica has been consistent prior to the first replayed transaction.
-  This healing property of the TLOG can be used to bootstrap the replica using only dirty operations. (TODO: prove it)
-  One downside of this approach is that the replica contains subtle inconsistencies during the replay, and cannot be used until the replay process finishes.
-  It should be mandatory to shutdown business applications while bootstrap and syncing are going on.
-
-- TBD: reverse-engineer `mnesia:add_table_copy` function, in order to make a copy that doesn't update the schema to include replicant nodes in the core cluster.
-  This could be difficult, since this operation propagates to the cluster via schema transaction.
+Bootstrapping can be done using dirty operations.
+Transaction log has an interesting property: replaying it can heal a partially corrupted replica.
+Transaction log replay can fix missing or reordered updates and deletes, as long as the replica has been consistent prior to the first replayed transaction.
+This healing property of the TLOG can be used to bootstrap the replica using only dirty operations. (TODO: prove it)
+One downside of this approach is that the replica contains subtle inconsistencies during the replay, and cannot be used until the replay process finishes.
+It should be mandatory to shutdown business applications while bootstrap and syncing are going on.
 
 ### Zombie fencing in push model
 
@@ -182,3 +182,19 @@ towards the replicant nodes if they are intended for writes.
 
 * `riak_core` was the original proposal, it's declined because the change is
   considered too radical for the next release. We may re-visit it in the future.
+
+* Bootstrapping replicant nodes using mnesia checkpoints is the easiest option, that guarantees consistent results.
+  Mnesia checkpoint is a standard feature that is used, for example, to perform backups.
+  Core node can activate a local checkpoint containing all the tables needed for the shard, and then iterate through it during bootstrap process.
+  Records from the mnesia checkpoint can be sent in batches using the same protocol as the online replication.
+
+  This solution has downsides, though:
+
+  + Checkpoints take non-trivial amount of resources and may slow down Mnesia: in order to make the checkpoint consistent, mnesia spawns a retainer process and installs a hook before the transaction commits.
+    This hook forwards values of the records to the retainer process, before they are overwritten.
+    Retainer process saves the values of the old records in a separate table.
+    Given that the snapshot is going to be updated with all the recent transactions as soon as bootstrapping completes, this is excessive.
+
+  + Checkpoint API in mnesia is designed in imperative style, and lifetime management of the checkpoints can be nontrivial, considering that core nodes can restart, replicant nodes can reconnect, and so on.
+
+* Pull-based model transaction replication model, where agent processes don't subscribe to mnesia events, but replicant nodes periodically poll for new records in the transaction log on the core nodes.
