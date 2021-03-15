@@ -7,7 +7,7 @@
 
 Run queue based overload protection for EMQX.
 
-EMQX need some mechanism to cool down the node when the node is overloaded.
+EMQX needs some mechanism to cool down the node when the node is overloaded.
 
 Runq (Erlang VM run queue) is a performance critical metric.
 It is a sign of overloading when the runq number is greater than the number of schedulers for a long period.
@@ -48,7 +48,7 @@ for last 5 polls, it should:
 
 Each application of EMQX should decide itself what to deal with the overload.
 
-The overload flag should be checked in all performance critical code paths and react on it.
+The overload flag should be checked in all performance-critical code paths and react on it.
 
 Suggested actions:
 
@@ -67,7 +67,7 @@ Suggested actions:
 - Stop spawning more parallel workers.
 
   consequences:
-    might heart latency.
+    might hurt latency.
 
 - Do not trigger active GC.
 
