@@ -47,7 +47,6 @@ group Bootstrap
   loop
     agent -> repl : {batch, [MnesiaOps]}
     repl -> repl : cache batch to the local rlog
-    agent <- repl : ok
   end
 
   boot_serv -> boot_client : bootstrap_complete
@@ -64,7 +63,6 @@ group local_replay
   loop
     agent -> repl : {batch, [MnesiaOps]}
     repl -> repl : cache batch in the local rlog
-    agent <- repl : ok
 
     repl -> repl : Import ops from the local rlog\nto the local replica
   end
@@ -77,7 +75,6 @@ hnote over repl : normal
 loop
   agent -> repl : {batch, [MnesiaOps]}
   repl -> repl : Import batch to the\nlocal replica
-  agent <- repl : ok
 end
 
 @enduml

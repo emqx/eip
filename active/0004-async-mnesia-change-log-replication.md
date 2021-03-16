@@ -151,20 +151,14 @@ In some cases it also creates a bootstrap client process and manages it.
 
 ![Replicant FSM](0004-assets/replicant-fsm.png)
 
-#### RLOG bootstrapper
+#### RLOG bootstrapper (client/server)
 
-RLOG bootstrapper is a simple `gen_server` process that runs on the core node.
-It is spawned by RLOG server when the replicant node wishes to be bootstrapped.
-RLOG bootstrapper runs `mnesia:dirty_all_keys` operation on the tables within the shard, and then iterates through the cached keys.
+RLOG bootstrapper is a temporary `gen_server` process that runs on both core and replicant nodes during replica initialization.
+RLOG bootstrapper server runs `mnesia:dirty_all_keys` operation on the tables within the shard, and then iterates through the cached keys.
 For each table and key pair it performs `mnesia:dirty_read` operation and caches the result.
 If the value for the key is missing, such record is ignored.
-Records are sent to the remote process in batches.
-
-#### bootstrap client
-
-Bootstrap client is a simple `gen_server` process that runs on the replicant node.
-It is spawned by the RLOG replica process when it detects that bootstrapping is needed.
-This process receives batches from the remote RLOG bootstrapper process and applies them to the local table replicas.
+Records are sent to the remote bootstrapper client process in batches.
+Bootstrapper client applies batches to the local table replica using dirty operations.
 
 ### Bootstrapping Empty Nodes
 
