@@ -151,6 +151,10 @@ In some cases it also creates a bootstrap client process and manages it.
 
 ![Replicant FSM](0004-assets/replicant-fsm.png)
 
+Full process of shard replication:
+
+![Replication MSC](0004-assets/replication-msc.png)
+
 #### RLOG bootstrapper (client/server)
 
 RLOG bootstrapper is a temporary `gen_server` process that runs on both core and replicant nodes during replica initialization.
