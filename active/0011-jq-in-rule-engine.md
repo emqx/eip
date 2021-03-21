@@ -3,6 +3,7 @@
 ## Change log
 
 * 2020-03-12: @terry-xiaoyu first draft
+* 2020-03-21: @terry-xiaoyu add section for JQ NIF
 
 ## Abstract
 
@@ -146,13 +147,67 @@ only output a single map result, and the map will then be piped to the JQ clause
 
 I am happy with this syntax now.
 
-### Introduce JQ as NIF
+### Introduce JQ as Port or NIF
 
+JQ is written in portable C as a single binary, reading command line argument
+from stdin and outputting results to the stdout. It supports Linux, OS X,
+FreeBSD, Solaris, and Windows for now, so the simplest way is to package the `jq`
+binary along with all of the emqx installation packages, and talk to `jq` using
+the [erlang port](http://erlang.org/doc/tutorial/c_port.html). For someone who
+is building emqx from source code of emqx repo, he can put the jq binary in to
+the right path according to the configuration.
 
+The second approach is NIF, with the drawback of more changes to the code (compile
+the code to a dynamic C library rather than a single binary), and safety (it
+brings down the entire erlang system on crash, and may hold up the erlang
+scheduler if it returns too late). But this way has the benefit of efficiency
+and no independent `jq` binary is required.
+
+### A try for using JQ as NIF
+
+An Erlang NIF library has been create at https://github.com/terry-xiaoyu/jqerl.
+
+It is now at the very early stage and is not well-tested.
+It requires the `jqlib`, so before using the library you should install the
+`jq` (version 1.6) on your system, and make sure the `libjq.a` can be found
+in `/usr/local/lib`.
+
+The NIF now can only parse JSON strings, the argument `--raw-input` maybe supported
+in the later version.
+
+Here's a quick look of the NIF:
+
+```
+rebar3 shell
+...
+
+1> jqerl:parse(<<".a">>, <<"{\"b\": 1}">>).
+{ok,[<<"null">>]}
+
+2> jqerl:parse(<<".a">>, <<"{\"a\": {\"b\": {\"c\": 1}}}">>).
+{ok,[<<"{\"b\":{\"c\":1}}">>]}
+
+3> jqerl:parse(<<".a|.[]">>, <<"{\"a\": [1,2,3]}">>).
+{ok,[<<"1">>,<<"2">>,<<"3">>]}
+```
+
+If very thing is OK, the API `jqerl:parse/2` always returns a list as the second
+element of the tuple, because jq may have multiple outputs.
+
+If there's some error in the jq filter or the json string, `{error, Reason}` will
+be returned:
+
+```
+1> jqerl:parse(<<".a">>, <<"{\"a\": ">>).
+{error,{jq_err_parse,<<"Unfinished JSON term at EOF at line 1, column 6 (while parsing '{\"a\": ')">>}}
+```
 
 ## Configuration Changes
 
-No configuration changes.
+If we are about to use erlang port to talk to the independent `jq` command line
+tool, then we need a configuration entry for specify the path of the `jq` binary.
+
+Otherwise no configuration change is required.
 
 ## Backwards Compatibility
 
@@ -185,4 +240,6 @@ required.
 
 Another way to process JSON strings in SQL is to provide more SQL functions or
 SQL keywords, just like how the jq does. But this would be too complicated and
-the syntax we created is hard to beat the JQ.
+the syntax we created is hard to beat the JQ. The idea is that it's better to
+use the well-tested library to do the work, rather than spend time reinventing
+the wheels.
