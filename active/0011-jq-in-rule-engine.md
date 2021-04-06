@@ -134,7 +134,7 @@ Then we change it again by simply putting the `JQ` clause behind the `SELECT`:
 
 ```
 SELECT
-    decode(.payload) as p
+    decode(payload) as p
 JQ
     .p
     | reduce .[] as $item ([]; . + [$item.a])
