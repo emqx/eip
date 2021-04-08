@@ -2,6 +2,7 @@
 
 ## Changelog
 * 2021-03-11: @qzhuyan Initial Draft
+* 2021-04-08: @qzhuyan Don't hibernate process when overloaded.
 
 ## Abstract
 
@@ -22,8 +23,8 @@ and lasts more than 5 mins until the user kicks in then restarts the nodes.
 Ideally, the runq should not be greater than the number of schedulers. The runq can grow
 for a short period of time to handle peak traffic but should not stay high for longer than 1 mins.
 
-Erlang is soft real-time system, A long run queue can cause time-critical processes not getting scheduled on time that may
-lead timeout in upper layer's protocol. High level CPU usage may also prevent users from login for O&M operations and leave nodes in zombie state.
+Erlang is soft real-time system, a long run queue can cause time-critical processes not getting scheduled on time that may
+lead timeout in upper layer's protocol. High CPU usage may also prevent users from login for O&M operations and leave nodes in zombie state.
 
 EMQX needs some mechanism to cool down itself before it runs into the situation above.
 
@@ -46,7 +47,7 @@ for last 5 polls, it should:
 
 ### When node need cooldown
 
-Each application of EMQX should decide itself what to deal with the overload.
+Each application of EMQX should decide for itself how to deal with the overload.
 
 The overload flag should be checked in all performance-critical code paths and react on it.
 
@@ -85,6 +86,10 @@ Suggested actions:
 - Different QoS messages would be handled differently.
 
   Such as drop low priority messages.
+  
+- Stop hibernating processes.
+
+  gen_server should prefer not going to hibernate state.
 
 ### When runq is back to normal.
 
