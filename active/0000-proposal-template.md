@@ -1,6 +1,6 @@
 # An Example of EMQ X Improvement Proposal
 
-## Change log
+## Changelog
 
 * 2020-10-21: @emqxplus Initial draft
 * 2020-02-05: @terry-xiaoyu Restructure
