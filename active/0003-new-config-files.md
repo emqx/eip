@@ -19,10 +19,9 @@ The config files and the config entries need to have the following properties:
 
 - The config files should be more readable and editable to users.
 
-- The configs should be able to updated at runtime.
+- It should be possible to update the configs at runtime.
 
-- The config files should be able to upgraded in a backward compatible manner during release hot
-  upgrade.
+- It should be possible to upgrade the config files in a backward-compatible manner during release hot upgrade.
 
 ## Design
 
@@ -40,7 +39,6 @@ verbose for editing.
 
 The solution here is to give user a clean (and short) `emqx.conf` with only necessary configs in it,
 without any comments.
-
 And provide an `emqx_config_sample.conf` file together with the emqx installation package, which is
 verbose and fully documented. The `emqx_config_sample.conf` can be used as a documentation. The user
 can also do a little change to the file and then replace the `emqx.conf` with it.
@@ -53,7 +51,9 @@ package.
 > Another way is to include a base file from the `emqx.conf`, this has the benefit of declaring the
 > "from" file explicitly. So the user can easily know where the "missing" configs in the `emqx.conf`
 > can be found, and what the default values are.
-> But this way we have to keep a `emqx_base.conf` file in the etc/ dir.
+> But this way we have to keep a `emqx_base.conf` file in the etc/ dir, which will confuse the user
+> about what the file is for. And also the `emqx_base.conf` now works like a file contains all the
+> default values of `emqx.conf`, but we'd better only maintain the default values in schema files.
 
 If a config is not found in `emqx.conf`, then the default value of the config will be used.
 If the config is mandatory then it prints an error messages and the emqx will not get started.
@@ -70,8 +70,18 @@ etc/
 ├── emqx_overrides.conf
 ```
 
+### The emqx_overrides.conf file
+
 The `emqx_overrides.conf` is used to store changes from API, and configs in it overrides the configs
 with the same name in `emqx.conf`.
+
+The `emqx_overrides.conf` should also be in `etc/` dir, so the user can easily find all
+available config files.
+If `emqx` has no write permission to the `etc/` dir, the request to the config changing API fails.
+For this, after installing emqx package the `etc/` should belong to the `emqx` user.
+
+The emqx.conf should NOT `include` the `emqx_overrides.conf`, as the relationship between the
+two files is conventional not configurable.
 
 ### Configuration file loading
 
@@ -145,28 +155,52 @@ node {
 }
 ```
 
-After that is the listeners:
+After that is the zones and listeners:
 
 ```
-listeners {
-  tcp "0.0.0.0:1883": {
-    max_connections: 1024000
+zone.external {
+  max_packet_size: 64KB
+  max_connections: 1024000
+
+  listeners.tcp {
+    type: tcp
+    bind: "0.0.0.0:1883"
   }
 
-  ssl "0.0.0.0:8883" {
+  listeners.ssl {
+    type: ssl
+    bind: "0.0.0.0:8883"
     max_connections: 512000
   }
 
-  ws "0.0.0.0:8083" {
+  listeners.ws {
+    type: ws
+    bind: "0.0.0.0:8083"
     mqtt_path: /mqtt
-    max_connections: 1024000
   }
 
-  wss "0.0.0.0:8084" {
+  listeners.wss {
+    type: wss
+    bind: "0.0.0.0:8084"
     mqtt_path: /mqtt
     max_connections: 512000
+  }
+
+}
+
+zone.internal {
+  max_packet_size: 128KB
+  max_connections: 1024000
+  bypass_auth: on
+  enable_acl: off
+  max_inflight: 128
+
+  listeners.tcp_internal {
+    type: tcp
+    bind: "0.0.0.0:1883"
   }
 }
+
 ```
 
 Next comes the remaining part of the config file:
@@ -219,20 +253,59 @@ If the configs are updated both from the API and config files at the meanwhile, 
 request from API and prompt the user to reload changes from files first, and then let the user make
 their changes again from API.
 
-### Changes to the CLIs:
+### Changes to the API:
 
-- `emqx_ctl config help <key>`
+The API can be used to change a config to all the nodes in a cluster at once. But before that
+the node serving the request should require a global lock using `global:set_lock/3` to avoid
+changing configs simultaneously from different nodes.
 
-  Print the help page for the key. The nested keys can be described as a path separated by `.`.
-  For example `a.b` for `{a: {b: Val}}`.
+The API can also specify a node and change configs only for that node.
 
-  If the key path contains an array, then we can use the `[]`, e.g. `a.b[].c` for
-  `{a:{b:[{c:Val}]}}`.
+Configurations in memory (the `ConfMap` described later) and the `emqx_overrides.conf` on
+different nodes may inconsistent after a network partition. But this is not a problem.
+Configs may also be different if the user changes and reloads configs on a specific node but
+not on the other nodes. The problem can be solved manually by applying the changes again after
+the cluster is re-established.
+
+- `HTTP GET /api/v4/configs` and `HTTP GET /api/v4/configs/{config-key-path}`
+
+  Get the current values of key. If the `{config-key-path}` is not specified in the path, it returns
+  the whole configuration tree (all the values) used in the current broker.
+
+  The response should be in JSON format.
+
+  The `{config-key-path}` can be described as a path separated by `.`, in `jq` syntax:
+
+  For example `a.b` for getting or setting the `Val` in `{a: {b: Val}}`.
+
+  If the key path contains an array, then we can use the `[]`, e.g.
+
+  Given a config structure `{a:{b:["foo", "bar"]}}`:
+
+  We can specify `a.b[0]` for `"foo"`, and `a.b[1]` for `"bar"`.
+
+  Given a config structure `{a:{b:[{c: "foo"}]}}`:
+
+  We can specify `a.b[0].c` for `"foo"`.
+
+  We can use the [JQ NIF](https://github.com/emqx/jq) to parse the `{config-key-path}` here.
+
+- `HTTP PUT /api/v4/configs`
+
+  Change the value of a key. The body contains the configs need to be updated, in JSON format.
+
+- `HTTP PUT/GET /api/v4/configs/{node}/*`
+
+  Get or change the configs values from a specific node rather than all of the nodes.
+
+- `HTTP GET /api/v4/config-docs/{config-key-path}`
+
+  Print the help page for the key.
 
   Example:
 
   ```shell
-  $ emqx_ctl config help log.handlers[].file
+  $ curl /api/v4/config-docs/log.handlers[0].file
 
   The log filename.
   Type: string
@@ -244,23 +317,30 @@ their changes again from API.
   <base_name>.N, where N is an integer.
   ```
 
-- `emqx_ctl config reload`
+- `HTTP POST /api/v4/config-files/reload`
 
-  Reload the config file, returns the list of config entries applied to `ConfMap`.
+  Reload the config file, returns the list of config entries applied to the broker.
 
-  Config entries that is changed in the config files but requires restarting the broker should be
-  shown as warnings:
-  `warning: config 'a=1' has been changed in emqx.conf but will only take effect after the emqx is restarted`.
+  Config entries that is changed in the config files but requires restarting the broker should
+  be returned in `need_restart`:
 
-  Or if a change need the restart of a component:
-  `warning: config 'b=1' has been changed in emqx.conf but will only take effect after the listener 'tcp.1883' is restarted`.
+  ```
+  200 OK
+  {code: 120,
+   data: {
+    changed: {
+      a: 1,
+      b: {
+        c: 2
+      }
+    },
+    need_restart: {
+      d: 2
+    }
+   }}
+  ```
 
-  Note that changes for configs for listener and logger do require restarting the broker, but they
-  can have there API/CLI to change some configs at runtime.
-  e.g. CLI `emqx_ctl log set-level debug` changes the current log level to debug, but the logger
-  will read configs from the config files after restarting the broker.
-
-- `emqx_ctl config status`
+- `HTTP POST /api/v4/config-files/status`
 
   Shows the list of config entries that are changed but has not been loaded to the broker.
   This shows both the configs that can be hot updated, and the ones need system restart:
@@ -268,35 +348,43 @@ their changes again from API.
   e.g. The status can look like follows after we've made some changes to the config files:
 
   ```
-  log.level: debug                                 [changed] [need restart]
-  mqtt.default.max_packet_size: 2MB                [changed]
-  mqtt.default.max_clientid_len: 65535             [changed]
+  200 OK
+  {code: 120,
+   data: {
+    changed: {
+      mqtt: {
+        default: {
+          max_packet_size: 2MB,
+          max_clientid_len: 65535
+        }
+      },
+      log: {
+        level: debug
+      }
+    }
+   }}
   ```
 
-  After `emqx_ctl config reload` the status would be:
+  After `/api/v4/config-files/reload` the status would be:
 
   ```
-  log.level: debug                                 [changed] [need restart]
+  200 OK
+  {code: 120,
+   data: {
+    changed: {
+      log: {
+        level: debug
+      }
+    }
+   }}
   ```
 
-  Or if there's no changes in the config file, return a message that the workspace is clear:
-  `no config file has been changed since last configuration reload`
+  The `log.level` remains in the changed field because it requires a restart.
 
-- emqx_ctl config show
+### Changes to the CLI:
 
-  Dumps the current configs used in the broker, both in `AppConf` and `ConfMap`:
-
-  ```
-  node.name: emqx@127.0.0.1
-  node.cookie: emqxsecretcookie
-  mqtt.default.max_packet_size: 1MB
-  ...
-  ```
-
-### Changes to the APIs:
-
-The detailed design for APIs is not include here. The APIs should provide the same functionalities
-as the CLI provides.
+The detailed design for CLI is not include here. The CLI should provide the same functionalities
+as the API provides.
 
 #### Specify Config Files at EMQ X Start
 
