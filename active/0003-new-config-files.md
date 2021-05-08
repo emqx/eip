@@ -159,7 +159,10 @@ After that is the zones and listeners:
 
 ```
 zone.external {
-  max_packet_size: 64KB
+  auth.enable: true
+  acl.enable: true
+  acl.file: "{{ platform_etc_dir }}/acl.conf"
+  rate_limit.max_conn_rate: 1000
   max_connections: 1024000
 
   listeners.tcp {
@@ -171,6 +174,11 @@ zone.external {
     type: ssl
     bind: "0.0.0.0:8883"
     max_connections: 512000
+    ssl_options: {
+      keyfile: "{{ platform_etc_dir }}/certs/key.pem"
+      certfile: "{{ platform_etc_dir }}/certs/cert.pem"
+      cacertfile: "{{ platform_etc_dir }}/certs/cacert.pem"
+    }
   }
 
   listeners.ws {
@@ -184,20 +192,29 @@ zone.external {
     bind: "0.0.0.0:8084"
     mqtt_path: /mqtt
     max_connections: 512000
+    ssl_options: {
+      keyfile: "{{ platform_etc_dir }}/certs/key.pem"
+      certfile: "{{ platform_etc_dir }}/certs/cert.pem"
+      cacertfile: "{{ platform_etc_dir }}/certs/cacert.pem"
+    }
   }
 
 }
 
 zone.internal {
-  max_packet_size: 128KB
-  max_connections: 1024000
-  bypass_auth: on
-  enable_acl: off
-  max_inflight: 128
+  acl.enable: false
+  auth.enable: false
+  rate_limit.max_conn_rate: 1000
 
-  listeners.tcp_internal {
+  listeners.mqtt-internal {
     type: tcp
-    bind: "0.0.0.0:1883"
+    bind: "127.0.0.1:11883"
+    acceptors: 4
+    max_connections: 1024000
+    active_n: 1000
+    tcp_options: ${refs.tcp_opts} {
+      backlog: 512
+    }
   }
 }
 
