@@ -1,0 +1,56 @@
+@startuml
+
+state "Suggested supervision tree" as suggested {
+
+ekka_rlog_sup: Top level supervisor
+ekka_rlog_status: gen_server
+ekka_rlog_status: Tracks up/down of replicas
+
+state "Replica nodes" as replica {
+      state ekka_rlog_replica: gen_statem
+      state "ekka_rlog_bootstrapper (client)" as ekka_rlog_bootstrapper_client: gen_server
+      ekka_rlog_replica --down[dashed]-> ekka_rlog_bootstrapper_client
+      note on link
+           Not in
+           supervision tree
+      end note
+}
+
+state "Core nodes" as core {
+      state "ekka_rlog_shard_sup (shard)" as ekka_rlog_shard_sup_shard: Top level shard supervisor
+      state "ekka_rlog_shard_sup (agent)" as ekka_rlog_shard_sup_agent
+      ekka_rlog_shard_sup_agent: simple-one-for-one supervisor
+      state "ekka_rlog_shard_sup (bootstrap)" as ekka_rlog_shard_sup_bootstrap
+      ekka_rlog_shard_sup_bootstrap: simple-one-for-one supervisor
+      ekka_rlog_server: gen_server
+      ekka_rlog_agent: gen_statem
+      ekka_rlog_bootstrapper: gen_server
+      ekka_rlog_cleaner: gen_server
+
+      ekka_rlog_shard_sup_shard --> ekka_rlog_server
+      ekka_rlog_shard_sup_shard --> ekka_rlog_cleaner
+      ekka_rlog_shard_sup_shard --> ekka_rlog_shard_sup_agent
+      ekka_rlog_shard_sup_shard --> ekka_rlog_shard_sup_bootstrap
+      ekka_rlog_server -[dashed]-> ekka_rlog_agent: link
+      ekka_rlog_server -[dashed]-> ekka_rlog_bootstrapper: link
+      ekka_rlog_shard_sup_agent --> ekka_rlog_agent
+      ekka_rlog_shard_sup_bootstrap --> ekka_rlog_bootstrapper
+}
+
+state fork <<fork>>
+ekka_rlog_sup --> fork
+fork --> ekka_rlog_shard_sup_shard
+fork --> ekka_rlog_replica
+ekka_rlog_sup --> ekka_rlog_status
+
+note top of replica
+     One per shard
+end note
+
+note top of core
+     One per shard
+end note
+
+}
+
+@enduml
