@@ -22,44 +22,6 @@ This will make the node more robust and the user will see more information about
 
 ## Design
 
-We expect  to do the following.
-1. be fast to start up.
-2. see the status at all times, the status changes when starting and stopping.
-3. be able to restart when an abnormal exit is encountered.
-4. can translate into journal log.
-
-**A typical use case**:
-
-- `systemctl start emqx` is finished in less than 3 seconds.
-
-- lookup status by `systemctl status emqx`
-
-  ```shell
-  >systemctl start emqx 
-  emqx is starting.
-  >systemctl status emqx
-  ...
-  Status: "load data from db 50%"
-  >systemctl status emqx
-  ...
-  Status: "load data from db 100% "
-  >systemctl status emqx
-  ...
-  Status: "emqx is ready"
-  ```
-
-- see journal log:
-
-  ```shell
-  >journalctl -f
-  -- Logs begin at 二 2020-12-01 22:01:35 CST. --
-  6月 10 21:28:01 172.xx.xx.xx emqx[11121]: Created xxx rule.
-  6月 10 21:28:01 172.xx.xx.xx emqx[11121] reloading config by .
-  6月 10 21:28:01 172.xx.xx.xx emqx[11121]: Started Session on xxx.
-  ```
-
-  
-
 Systemd is built into the mainstream Linux,  flexible configuration with fine control, Read [the full configurations first](https://www.freedesktop.org/software/systemd/man/systemd.exec.html). 
 
 #### 1. [Unit].After
@@ -74,20 +36,24 @@ After=network.target systemd-journald
 
 #### 2.[Service].Type
 
-Launching the Erlang release will generate a set of processes, such as beam.smp(main PID) inet_gethost, erl_child_setup, (run_erl, memsup, cpu_sup as option), we want **systemd monitor main PID, restart all process if main PID exit abnormally**.
+Launching the Erlang release will generate a set of processes, such as beam.smp inet_gethost, erl_child_setup, (run_erl, memsup, cpu_sup as option), we want **systemd monitor main PID, restart all process if main PID exit abnormally**.
 
 [Type](https://www.freedesktop.org/software/systemd/man/systemd.service.html#Type=): `simple`, `exec`, `forking`, `oneshot`, `dbus`, `notify` or `idle`:
 
-- `simple`:default type, also be recommend for long-running services, the service manager will consider the unit started immediately after the main service process has been forked off. when release start failed, the main PID exit abnormal, service status is inactive. This allows the service to become available very quickly(even release is not ready yet🥲), Release must start as foreground mode to keep running,   systemd will conside service is active when release main pid been forked off, we can't tell systemd we are actually ready(active) after  batch of applications already started. `simple` is not the best choice.
+![simple](./0012-assets/systemd-simple.png)
 
-- `exec`:is similar to `simple`,the service manager will consider the unit started immediately after the main service binary has been executed(Don't consider fork() result). not suitable for Erlang release.
+- `simple`:default type, also be recommend for long-running services, the service manager will consider the unit started immediately after the main service process has been forked off. when release start failed, the main PID exit abnormal, service status is inactive. This allows the service to become available very quickly(even release is not ready yet), Release must start as foreground mode to keep running,   systemd will conside service is active when release main pid been forked off, we can't tell systemd we are actually ready(active) after  batch of applications already started. 
+
+- `exec`:is similar to `simple`,the service manager will consider the unit started immediately after the main service binary has been executed(**Don't consider fork() result**. not suitable for our case.
+
+  ![forking](./0012-assets/systemd-forking.png)
 
 - `forking`:it is expected that the process configured with `ExecStart=` will call `fork()` as part of its start-up. The parent process is expected to exit when start-up is complete and all communication channels are set up. The child continues to run as the main service process, and **the service manager will consider the unit started when the parent process exits.** it is recommended to also use the `PIDFile=` option, so that systemd can reliably identify the main process of the service. systemd will proceed with starting follow-up units as soon as the parent process exits.
 
   Often, a traditional daemon only consists of one process. Therefore, if only one process is left after the original process terminates, systemd will consider that process the main process of the service. In that case, the `$MAINPID` variable will be available in `ExecReload=`, `ExecStop=`, etc.
 
   In case **more than one process remains, systemd will be unable to determine the main process, so it will not assume there is one. In that case, `$MAINPID` will not expand to anything.** However, if the process decides to write a traditional PID file, systemd will be able to read the main PID from there. Please set `PIDFile=` accordingly. Note that the daemon should write that file before finishing with its initialization. Otherwise, systemd might try to read the file before it exists.
-  if seting emqx as forking, we must run emxq in daemon mode, and set `PidFile=/var/lib/emqx/emqx_erl_pipes/emqx@xxx.xx.xx.xxx/`, and if we don't setting it:
+  if setting emqx as forking, we must run emqx in daemon mode, and set `PidFile=/var/lib/emqx/emqx_erl_pipes/emqx@xxx.xx.xx.xxx/`, and if we don't setting it:
 
   ```shell
   $> systemctl status emqx
@@ -114,11 +80,11 @@ Launching the Erlang release will generate a set of processes, such as beam.smp(
   31776
   ```
 
-  The main PID is `31492(run_erl)`, but we want emqx pid is `31776`. we expect 31776 to be Main PID.
+  The main PID is `31492(run_erl)`, not emqx pid( `31776)`.  (PS: I have encountered in the prod environment that the beam.smp process suddenly disappeared, only the run_erl process was there, maybe only pipe file exist, no time to analyze why. After reboot, it was normal again.)
 
-  `[PIDFile=]` document says: Note that **PID files should be avoided in modern projects. Use `Type=notify` or `Type=simple` where possible**, which does not require use of PID files to determine the main process of a service and avoids needless forking.  So let's put `forking` aside for a moment.
+  `[PIDFile=]` document says: Note that **PID files should be avoided in modern projects. Use `Type=notify` or `Type=simple` where possible**, which does not require use of PID files to determine the main process of a service and avoids needless forking.
 
-- `oneshot`: is similar to `simple`, the service manager will consider the unit up after the main proces exits,
+- `oneshot`: is similar to `simple`, the service manager will consider the unit up after the main proces exits.
 
   ```yaml
   [Unit]
@@ -130,11 +96,19 @@ Launching the Erlang release will generate a set of processes, such as beam.smp(
   WantedBy=multi-user.target
   ```
 
-   [a good use case is setup network environment](https://gist.github.com/bketelsen/828045a8b90cfe87d1d6#file-cloud-config-yaml-L83-L102)(`DEFAULT_IPV4=172.253.33.xx`) before etcd start.[setup-nework-environment](https://github.com/kelseyhightower/setup-network-environment). Obviously this one doesn't fit release either.
+   [a good use case is setup network environment](https://gist.github.com/bketelsen/828045a8b90cfe87d1d6#file-cloud-config-yaml-L83-L102)(`DEFAULT_IPV4=172.253.33.xx`) before etcd start.[setup-nework-environment](https://github.com/kelseyhightower/setup-network-environment). Obviously this one doesn't fit our solution.
 
-- `dbus` and `idle` is not an option for release.
+- `dbus` and `idle` is also not an option for release.
 
-- `notify`: is similar to `exec`, it is expected that the service sends a notification message via [sd_notify(3)](https://www.freedesktop.org/software/systemd/man/sd_notify.html#) or an equivalent call when it has finished starting up, In other words, we can manually tell systemd that it's available after all applications launched.  Since OTP/19 supports Unix sockets, we can integrate systemd's notify mode directly without relying on non-Erlang libraries. https://github.com/hauleth/erlang-systemd. This is the perfect choice for release.
+  ![notify](/Users/zhongwen/github/emqx/eip/active/0012-assets/systemd-notify.png)
+
+- `notify`: is similar to `exec`, it is expected that the service sends a notification message via [sd_notify(3)](https://www.freedesktop.org/software/systemd/man/sd_notify.html#) or an equivalent call when it has finished starting up, In other words, we can manually tell systemd that it's available after all applications launched.  Since OTP/19 supports Unix sockets, we can integrate systemd's notify mode directly without relying on non-Erlang libraries. https://github.com/hauleth/erlang-systemd. 
+
+In summary, `simple`, `forking`, and `notify` are suitable for us: , `simple` is the simplest and has a fast startup time, `forking` requires starting daemon mode,  add a `run_erl` as the main pid(if we consider systemd manager restart mechanism, `beam.smp` as the main pid is the best choice). `notify` is more functional and can tell systemd the status at will, also fast startup time. 
+
+Personally, I prefer the `notify` solution, which allows the user to find out more real-time status via systemd commands.
+
+Special Note: By default, all logs exported to `standard_io` will be placed on `/var/log/messages` when started in foreground mode, so **don't print too many debug logs on standard_io handle**.  Integrate the logs that users care by `journalctl -f` is a better choice.
 
 #### 3.[service].User/Group
 
@@ -228,7 +202,7 @@ In most cases we use `systemctl stop emqx` to stop release, but a few users may 
 ```yaml
 [Unit]
 Description=emqx broker
-After=syslog.target network.target
+After= network.target systemd-journald
 
 [Service]
 Type=notify
@@ -269,8 +243,8 @@ RestartSec=10
 WorkingDirectory=/var/lib/emqx
 ExecStart=/usr/bin/emqx foreground
 ExecStop=/usr/bin/emqx stop
-# when exec emqx stop, conside the exit code as successExitStatus
-SuccessExitStatus= 69
+# when exec emqx stop, conside the exit code as successExitStatus todo find out emqx stop exit code
+SuccessExitStatus= 1
 
 [Install]
 WantedBy=multi-user.target
@@ -278,6 +252,8 @@ WantedBy=multi-user.target
 
 
 ## Configuration Changes
+
+It is easy to integrate journal log by [erlang-systemd's systemd_journal_h](https://github.com/hauleth/erlang-systemd#logs) .
 
 Add journal log configurations.
 
