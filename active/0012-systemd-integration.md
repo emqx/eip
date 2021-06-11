@@ -40,13 +40,17 @@ Launching the Erlang release will generate a set of processes, such as beam.smp 
 
 [Type](https://www.freedesktop.org/software/systemd/man/systemd.service.html#Type=): `simple`, `exec`, `forking`, `oneshot`, `dbus`, `notify` or `idle`:
 
-![simple](./0012-assets/systemd-simple.png)
+![systemd-simple](https://user-images.githubusercontent.com/3116225/121689853-b8bc1980-caf7-11eb-88ce-2b334caace70.png)
+
+![simple](0012-assets/systemd-simple.png)
 
 - `simple`:default type, also be recommend for long-running services, the service manager will consider the unit started immediately after the main service process has been forked off. when release start failed, the main PID exit abnormal, service status is inactive. This allows the service to become available very quickly(even release is not ready yet), Release must start as foreground mode to keep running,   systemd will conside service is active when release main pid been forked off, we can't tell systemd we are actually ready(active) after  batch of applications already started. 
 
 - `exec`:is similar to `simple`,the service manager will consider the unit started immediately after the main service binary has been executed(**Don't consider fork() result**. not suitable for our case.
 
-  ![forking](./0012-assets/systemd-forking.png)
+  ​	![systemd-forking](https://user-images.githubusercontent.com/3116225/121689842-b659bf80-caf7-11eb-9e43-966c3f0cd9d2.png)
+
+  ![forking](0012-assets/systemd-forking.png)
 
 - `forking`:it is expected that the process configured with `ExecStart=` will call `fork()` as part of its start-up. The parent process is expected to exit when start-up is complete and all communication channels are set up. The child continues to run as the main service process, and **the service manager will consider the unit started when the parent process exits.** it is recommended to also use the `PIDFile=` option, so that systemd can reliably identify the main process of the service. systemd will proceed with starting follow-up units as soon as the parent process exits.
 
@@ -100,7 +104,9 @@ Launching the Erlang release will generate a set of processes, such as beam.smp 
 
 - `dbus` and `idle` is also not an option for release.
 
-  ![notify](/Users/zhongwen/github/emqx/eip/active/0012-assets/systemd-notify.png)
+  ​	 ![systemd-notify](https://user-images.githubusercontent.com/3116225/121689848-b8238300-caf7-11eb-8514-5bc504ee2333.png)
+
+  ![notify](0012-assets/systemd-notify.png)
 
 - `notify`: is similar to `exec`, it is expected that the service sends a notification message via [sd_notify(3)](https://www.freedesktop.org/software/systemd/man/sd_notify.html#) or an equivalent call when it has finished starting up, In other words, we can manually tell systemd that it's available after all applications launched.  Since OTP/19 supports Unix sockets, we can integrate systemd's notify mode directly without relying on non-Erlang libraries. https://github.com/hauleth/erlang-systemd. 
 
@@ -295,5 +301,5 @@ Erlang build in `-heart` option.
 - [sytemd configurations documents](https://www.freedesktop.org/software/systemd/man/systemd.exec.html).
 - [Learning to love systemd](https://opensource.com/article/20/4/systemd).
 - [Linux Logging with Systemd](https://www.loggly.com/ultimate-guide/linux-logging-with-systemd/).
-- https://www.freedesktop.org/software/systemd/man/systemd-journald.service.html
+- [journald.service](https://www.freedesktop.org/software/systemd/man/systemd-journald.service.html).
 
