@@ -40,15 +40,11 @@ Launching the Erlang release will generate a set of processes, such as beam.smp 
 
 [Type](https://www.freedesktop.org/software/systemd/man/systemd.service.html#Type=): `simple`, `exec`, `forking`, `oneshot`, `dbus`, `notify` or `idle`:
 
-![systemd-simple](https://user-images.githubusercontent.com/3116225/121689853-b8bc1980-caf7-11eb-88ce-2b334caace70.png)
-
 ![simple](0012-assets/systemd-simple.png)
 
 - `simple`:default type, also be recommend for long-running services, the service manager will consider the unit started immediately after the main service process has been forked off. when release start failed, the main PID exit abnormal, service status is inactive. This allows the service to become available very quickly(even release is not ready yet), Release must start as foreground mode to keep running,   systemd will conside service is active when release main pid been forked off, we can't tell systemd we are actually ready(active) after  batch of applications already started. 
 
 - `exec`:is similar to `simple`,the service manager will consider the unit started immediately after the main service binary has been executed(**Don't consider fork() result**. not suitable for our case.
-
-  ​	![systemd-forking](https://user-images.githubusercontent.com/3116225/121689842-b659bf80-caf7-11eb-9e43-966c3f0cd9d2.png)
 
   ![forking](0012-assets/systemd-forking.png)
 
@@ -102,9 +98,7 @@ Launching the Erlang release will generate a set of processes, such as beam.smp 
 
    [a good use case is setup network environment](https://gist.github.com/bketelsen/828045a8b90cfe87d1d6#file-cloud-config-yaml-L83-L102)(`DEFAULT_IPV4=172.253.33.xx`) before etcd start.[setup-nework-environment](https://github.com/kelseyhightower/setup-network-environment). Obviously this one doesn't fit our solution.
 
-- `dbus` and `idle` is also not an option for release.
-
-  ​	 ![systemd-notify](https://user-images.githubusercontent.com/3116225/121689848-b8238300-caf7-11eb-8514-5bc504ee2333.png)
+- `dbus` and `idle` is also not an option for release. 
 
   ![notify](0012-assets/systemd-notify.png)
 
