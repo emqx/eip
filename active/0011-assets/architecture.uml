@@ -1,0 +1,44 @@
+@startuml
+
+package "Node" as node1 {
+  database "Mnesia" as mnesia1 {
+    rectangle "SessionId -> SessionState\nTopic -> Topic Filter (Trie)\nTopic Filter -> Sessionid" as mn1
+  }
+  rectangle publisher as pub
+  rectangle subscriber as sub
+  rectangle broker
+}
+
+database "External" {
+  rectangle "MsgID -> Msg\n{SessionID, MsgId} -> null" as external
+
+}
+
+external <.. pub
+note on link
+ store message
+ on publish
+end note
+pub ..> mn1
+note on link
+  lookup persistent
+  sessionID from topic
+end note
+external ..> sub
+note on link
+  read on resuming
+  session
+end note
+sub ..> mn1
+note on link
+  store latest msgID
+  on delivery
+end note
+pub -> broker
+broker -> sub
+broker ..> mn1
+note on link
+  update on
+  subscription change
+end note
+@enduml
