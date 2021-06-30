@@ -1,0 +1,52 @@
+@startuml
+
+actor Subscriber as sub
+participant Connection as subcon
+participant Broker as broker
+database Mnesia as mnesia
+database External as external
+participant Helper as helper
+participant Connection as pubcon
+actor Publisher as pub
+
+== Clean start ==
+sub -> subcon : Connect\n(Session-Expiry > 0,\nClean-Start: 1)
+subcon -> mnesia : Register sessionID
+subcon -> external : Clean start
+
+== Subscribe ==
+sub -> subcon : Subscribe
+subcon -> mnesia : Store topic filter in trie\nand session table
+subcon -> sub : suback
+
+== Publish ==
+pub -> pubcon : publish
+pubcon -> broker : message
+pubcon -> mnesia : lookup topic in trie for\npersistent session
+broker -> subcon : message
+pubcon -> helper : persist message
+subcon -> sub : message
+helper -> mnesia : lookup sessionID
+rnote over pubcon
+  Still responsive
+endrnote
+subcon -> mnesia : update marker
+helper -> external : persist message
+helper -> pubcon : ack
+pubcon -> pub : puback
+
+== Persistent resume (connection gone) ==
+sub -> subcon : Connect\n(Session-Expiry > 0,\nClean-Start: 0)
+subcon -> mnesia : Register sessionID
+subcon -> mnesia : Get state\nincluding markers
+subcon -> broker : Subscribe to topics
+subcon -> external : Get pending messages
+rnote over subcon
+  Queue online messages
+end rnote
+group Repeat until queue is empty
+  subcon -> sub : pending message
+  subcon -> mnesia : update marker
+end group
+
+@enduml
