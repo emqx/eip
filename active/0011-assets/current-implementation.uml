@@ -1,0 +1,44 @@
+@startuml
+
+participant Client                 as client
+participant "Connection\nProcess"  as connection
+participant emqx_cm_locker         as locker
+database Mnesia                    as mnesia
+box "Possibly Other Node"
+  participant "emqx_cm_locker"     as other_locker
+  participant "Connection"         as other_connection
+end box
+
+client -> connection               : connect
+group emqx_cm                      : open_session
+  connection -> locker             : lock session id
+  locker <-> other_locker          : lock session id
+  connection <-> mnesia            : lookup session id
+  group emqx_cm                    : takeover_session
+    connection -> other_connection : begin takeover
+    connection <- other_connection : "#session{}"
+    rnote over other_connection
+      Buffer
+      messages
+    endrnote
+    rnote over connection
+      Take over
+      subscriptions.
+    endrnote
+    connection -> other_connection : end takeover
+    other_connection -> connection : all pending msgs
+  end
+  rnote over other_connection
+    Unsubscribe
+    and terminate
+  endrnote
+  connection -> mnesia             : register channel\n(emqx_cm_registry)
+  connection -> locker             : release lock
+  locker <-> other_locker          : release lock
+end
+
+client <- connection      : connack
+client <- connection      : all pending msgs
+
+@enduml
+
