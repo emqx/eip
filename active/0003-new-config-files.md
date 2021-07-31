@@ -158,41 +158,41 @@ node {
 After that is the zones and listeners:
 
 ```
-zone.external {
-  auth.enable: true
-  acl.enable: true
-  acl.file: "{{ platform_etc_dir }}/acl.conf"
+zone.default {
   rate_limit.max_conn_rate: 1000
   max_connections: 1024000
 
-  listeners.tcp {
+  listeners.mqtt_tcp {
     type: tcp
     bind: "0.0.0.0:1883"
   }
 
-  listeners.ssl {
+  listeners.mqtt_ssl {
     type: ssl
     bind: "0.0.0.0:8883"
     max_connections: 512000
-    ssl_options: {
+    ssl.enable: true
+    ssl: {
+      ssl.versions: ["tlsv1.3", "tlsv1.2", "tlsv1.1", "tlsv1"]
       keyfile: "{{ platform_etc_dir }}/certs/key.pem"
       certfile: "{{ platform_etc_dir }}/certs/cert.pem"
       cacertfile: "{{ platform_etc_dir }}/certs/cacert.pem"
     }
   }
 
-  listeners.ws {
+  listeners.mqtt_ws {
     type: ws
     bind: "0.0.0.0:8083"
     mqtt_path: /mqtt
   }
 
-  listeners.wss {
+  listeners.mqtt_wss {
     type: wss
     bind: "0.0.0.0:8084"
     mqtt_path: /mqtt
     max_connections: 512000
-    ssl_options: {
+    ssl.enable: true
+    ssl: {
       keyfile: "{{ platform_etc_dir }}/certs/key.pem"
       certfile: "{{ platform_etc_dir }}/certs/cert.pem"
       cacertfile: "{{ platform_etc_dir }}/certs/cacert.pem"
@@ -211,8 +211,7 @@ zone.internal {
     bind: "127.0.0.1:11883"
     acceptors: 4
     max_connections: 1024000
-    active_n: 1000
-    tcp_options: ${refs.tcp_opts} {
+    tcp: ${refs.tcp_opts} {
       backlog: 512
     }
   }
@@ -231,11 +230,14 @@ broker {
 
 log {
   primary_level: warning
-  handlers: [{
-    type: file
+  console_handler.enable: false
+  file_handlers.emqx_log: {
     level: warning
-    filename: "{{ platform_log_dir }}/emqx.log"
-  }]
+    file: "etc/emqx.log"
+    rotation.enable: true
+    rotation.count: 10
+    max_size: 10MB
+  }
 }
 
 cluster {
@@ -245,7 +247,7 @@ cluster {
 
 rpc {
   mode: async
-  tcp_client_num: num_cpu_cores
+  tcp_client_num: 1
 }
 ```
 
