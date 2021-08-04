@@ -229,8 +229,10 @@ broker {
 }
 
 log {
-  console_handler.enable: false
-  console_handler.level: warning
+  console_handler {
+    enable: true
+    level: warning
+  }
   file_handlers.emqx_log: {
     level: warning
     file: "etc/emqx.log"
