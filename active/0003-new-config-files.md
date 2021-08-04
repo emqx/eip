@@ -173,7 +173,7 @@ zone.default {
     max_connections: 512000
     ssl.enable: true
     ssl: {
-      ssl.versions: ["tlsv1.3", "tlsv1.2", "tlsv1.1", "tlsv1"]
+      versions: ["tlsv1.3", "tlsv1.2", "tlsv1.1", "tlsv1"]
       keyfile: "{{ platform_etc_dir }}/certs/key.pem"
       certfile: "{{ platform_etc_dir }}/certs/cert.pem"
       cacertfile: "{{ platform_etc_dir }}/certs/cacert.pem"
