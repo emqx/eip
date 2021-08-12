@@ -23,7 +23,7 @@ Update resources may be lost during the RPC call.
 
 This proposal uses mnesia to record the execution status of MFA, to ensure the consistency of the final resources & data in the cluster.
 
-This proposal is not applicable to high frequency request calls.
+This proposal is not applicable to high frequency request calls, all updates are performed in strict order.
 
 ### mnesia table structure
 
@@ -58,27 +58,44 @@ mnesia(boot) ->
 ```erlang
 execute() ->
     Node = node(),
-    Trans = fun() ->
-        TnxId = inc_tnx_id(),
-        PendingNodes = ekka:nodelist(),
-        %% check new node join but execute none transaction yet.
-        [begin
-             case mnesia:read(emqx_cluster_tnx_id, N) of
-                 [] -> mnesia:write(#cluster_tnx_id{node = N, tnx_id = TnxId});
-                 _ -> ok
-             end
-         end || N <- PendingNodes],
-        Rec = #cluster_rpc{tnx_id = TnxId, mfa = MFA, pending_nodes = PendingNodes},
-        mnesia:write(Rec),
-        case apply_mfa(Node, MFA) of
-            ok -> ok;
-            {error, Reason} -> mnesia:abort({error, Reason})
-        end
-            end,
-     ekka_mnesia:transaction(?COMMON_SHARD, Trans).
+    %% make sure node's local mfa all finished. do the same as the handle_table_event below.
+     case apply_self_unfinished_mfa_trans(Node) of
+          {error, Reason} -> {error, Reason}
+          ok -> ok   
+            Trans = fun() ->
+                mnesia:write_lock_table(emqx_cluster_rpc),
+                mnesia:write_lock_table(emqx_cluster_tnx_id),
+                FinishId = get_finished_tnx_id(Node),
+                LatestId = get_latest_tnx_id(),
+                %% make sure node's local mfa all finished.
+                case apply_self_unfinished_mfa(FinishId, LatestId, Node) of
+                    {error, Reason} -> mnesia:abort({error, Reason});
+                    ok ->
+                        TnxId = incr_tnx_id(),
+                        PendingNodes = ekka:nodelist(),
+                        %% check new node join but execute none transaction yet.
+                        [begin
+                             case mnesia:read(emqx_cluster_tnx_id, N) of
+                                 [] -> mnesia:write(#cluster_tnx_id{node = N, tnx_id = TnxId});
+                                 _ -> ok
+                             end
+                         end || N <- PendingNodes],
+                        Rec = #cluster_rpc{tnx_id = TnxId, mfa = MFA, pending_nodes = PendingNodes},
+                        mnesia:write(Rec),
+                        case apply_mfa(Node, MFA) of
+                            ok -> ok;
+                            {error, Reason} -> mnesia:abort({error, Reason})
+                        end
+                end
+                    end,
+                ekka_mnesia:transaction(?COMMON_SHARD, Trans)
+      end.
 ```
 
-- Generate the incremental `tnx_id`.
+- In order to keep the transactions in strong order, the previous uncompleted transactions should be executed in advance. The reason for not merging this behavior into the main transaction is to ensure that if the main transaction abort, don't need to abort those unfinished MFA transactions.
+- Start main transation: apply unfinished MFA on local node again to ensure all pre MFA already finished in order. When other nodes are doing updates at the same time, there will be competing conditions that may create a new MFA update between the previous transactions and this one. So we must check again inside the main transaction to see if a new update is coming in.
+  **Risk point**: If the previous unfinished MFA in the main transaction is executed successfully, but the latest MFA fails and leads to abort,  it will roll back the previous unfinished MFA as well, thus causing the MFA to be executed again later. So MFA must be idempotent.
+- Generate the incremental `tnx_id`, alway striktly +1.
 
 - Set up the pending_node and check if all nodes have `tnx_id`, if not, it means a new node join in, set current tnx_id as the  tnx_id of the new node.
 - Execute MFA successfully then return.
@@ -129,7 +146,7 @@ execute() ->
    - Return if execution MFA succeeds.
    - Abort this transaction if the execution of MFA fails.
 
-If there is a failure in those transaction group, the process ends and is re-executed from failed transaction after a certain period of time.
+If there is a failure in those transaction group, the transaction aborts and is re-executed from this failed transaction after a certain period of time.
 
 ### API Design
 
@@ -139,6 +156,7 @@ If there is a failure in those transaction group, the process ends and is re-exe
                           MFA :: {module(),atom(),[term()]},                          
                           TxnId :: pos_integer()}].  
 -spec(emqx_cluster_rpc:reset() -> ok.
+-spec(emqx_cluster_rpc:status() -> [#{tnx_id => pos_integer(), mfa => mfa(), pending_node => [node()]}]).
 ```
 
 ## Configuration Changes
