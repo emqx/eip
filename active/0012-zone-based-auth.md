@@ -8,7 +8,7 @@ It should be possible to define multiple zones with different authentication sta
 
 ## Motivation
 
-We have two types of clients, one of them connects using external network and needs to be authenticated by http
+We have two types of clients, one of them connects through an external network and needs to be authenticated by http,
 but another group connects using an internal network and we need only jwt authentication for them.
 
 ## Design
