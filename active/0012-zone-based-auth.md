@@ -4,7 +4,7 @@
 
 ## Abstract
 
-We can define multiple zones with multiple authentication stack on emqx.
+It should be possible to define multiple zones with different authentication stacks.
 
 ## Motivation
 
