@@ -30,133 +30,171 @@ This proposal is not applicable to high frequency request calls, all updates are
 ### mnesia table structure
 
 ```erlang
--define(CLUSTER_MFA, emqx_cluster_call_mfa).
--define(CLUSTER_CURSOR, emqx_cluster_call_cursor).
--record(cluster_call_mfa, {tnx_id :: pos_integer(), mfa :: mfa(), created_at :: pos_integer(), initiator :: node()}).
--record(cluster_call_cursor, {node :: node(), tnx_id :: intger()}).
+-record(cluster_rpc_mfa, {tnx_id :: pos_integer(), mfa :: mfa(), created_at :: calendar:datetime(), initiator :: node()}).
+-record(cluster_rpc_cursor, {node :: node(), tnx_id :: pos_integer()}).
 mnesia(boot) ->
     ok = ekka_mnesia:create_table(?CLUSTER_MFA, [
         {type, ordered_set},
         {disc_copies, [node()]},
         {local_content, true},
-        {record_name, activated_alarm},
-        {attributes, record_info(fields, cluster_call_mfa)}]),
+        {record_name, cluster_rpc_mfa},
+        {attributes, record_info(fields, cluster_rpc_mfa)}]),
     ok = ekka_mnesia:create_table(?CLUSTER_CURSOR, [
         {type, set},
         {disc_copies, [node()]},
         {local_content, true},
-        {record_name, cluster_tnx_id},
-        {attributes, record_info(fields, cluster_call_cursor)}]);
+        {record_name, cluster_rpc_cursor},
+        {attributes, record_info(fields, cluster_rpc_cursor)}]);
 mnesia(copy) ->
-    ok = ekka_mnesia:copy_table(cluster_call_mfa, disc_copies),
-    ok = ekka_mnesia:copy_table(cluster_call_cursor, disc_copies).
+    ok = ekka_mnesia:copy_table(cluster_rpc_mfa, disc_copies),
+    ok = ekka_mnesia:copy_table(cluster_rpc_cursor, disc_copies).
 ```
 
 - `tnx_id` is strictly +1 incremental, all executed transactions must be executed in strict order, if there is node 1 executing transaction 1, 2, 3, but node 2 keeps failing in executing transaction 2 after executing transaction 1, it will keep retrying transaction 2 until it succeeds before executing transaction 3.
 
 - `cluster_call_cursor` :   Records the maximum `tnx_id` executed by the node. All transactions less than this id have been executed successfully on this node.
-- `cluster_call_mfa`: Records the MFA for each `tnx_id` in pairs. Keep the latest completed 100 records for querying and doubleshooting.
+- `cluster_call_mfa`: `ordered_set`:  Records the MFA for each `tnx_id` in pairs. Keep the latest completed 100 records for querying and troubleshooting.
 
 ### Flow
 
-1. `emqx_cluster_rpc_handler` register on each node, subscribes to the mnesia table simple event, and is responsible for the execution of all transactions.
+1. `emqx_cluster_rpc_handler` register as `gen_statem` on each node, subscribes to the mnesia table simple event, and is responsible for the execution of all transactions.
 
 2. `handler` init will catch up latest tnx_id. if node's tnx_id is 5, but latest MFA's tnx_id is 10, it will try to run MFA from 6 to 10 by 5 transactions.
 
    ```erlang
-   catch_up() ->
-       case transaction(fun() -> mnesia:last(?CLUSTER_MFA) end) of
-           {atomic, LastTnxId} ->
-               catch_up(node(), LastTnxId);
-           {aborted, Reason} ->
-               retry_catch_up_later(Reason)
+   -define(DEL_MFA_AFTER(_Time1_), {timeout, _Time1_ * 1000, del_stale_mfa}).
+   -define(CATCH_UP_AFTER(_Time_), {state_timeout, _Time_ * 1000, catch_up_delay}).
+   init([]) ->
+       {ok, _Node} = mnesia:subscribe({table, ?CLUSTER_MFA, simple}),
+       {ok, ?CATCH_UP, {}, ?CATCH_UP_AFTER(0)}.
+   handle_event(state_timeout, catch_up_delay, _State, Data) ->
+       catch_up(node(), Data);
+   
+   catch_up(Node, Data) ->
+       case get_next_mfa(Node) of
+           {atomic, caught_up} -> {next_state, ?IDLE, Data, [?DEL_MFA_AFTER(5 * 60)]};
+           {atomic, {still_lagging, NextId, MFA}} ->
+               case apply_mfa(MFA) of
+                   ok ->
+                       Fun = fun() -> mnesia:write(#cluster_rpc_cursor{node = Node, tnx_id = NextId}) end,
+                       case transaction(Fun) of
+                           {atomic, ok} -> catch_up(Node, Data);
+                           _ -> {next_state, ?CATCH_UP, Data, [?CATCH_UP_AFTER(1)]}
+                       end;
+                   _ -> {next_state, ?CATCH_UP, Data, [?CATCH_UP_AFTER(1)]}
+               end;
+           {aborted, _Reason} -> {next_state, ?CATCH_UP, Data, [?CATCH_UP_AFTER(1)]}
        end.
    
-   catch_up(Node, ToTnxId) ->
-       case transaction(fun() -> do_catch_up(Node, ToTnxId) end) of
-           {atomic, caught_up} -> ok;
-           {atomic, still_lagging} -> catch_up(Node, ToTnxId);
-           {aborted, Reason} -> retry_catch_up_later(Reason)
-       end.
-   
-   do_catch_up(Node, ToTnxId) ->
-       case mnesia:wread({?CLUSTER_CURSOR, Node}) of
-           [] -> caught_up;
-           [#cluster_call_cursor{tnx_id = DoneTnxId}] when ToTnxId =< DoneTnxId -> caught_up;
-           [Rec = #cluster_call_cursor{tnx_id = DoneTnxId}] ->
-               CurTnxId = DoneTnxId + 1,
-               mnesia:write(Rec#cluster_call_cursor{tnx_id = CurTnxId}),
-               [#cluster_call_mfa{mfa = MFA}] = mnesia:read(?CLUSTER_MFA, CurTnxId),
-               apply_mfa(Node, MFA)
-       end.
-   ```
-
-3. If a new update operation is added, the `handler` will receive a write event of the `cluster_call_mfa` table.
-   When  `EventTxnId = DoneTnxId+1`, i.e. we have finished  transaction 4 and received the notification of transaction 5, we will execute transaction 5 directly, if we receive transaction 6, we will do nothing and let `catch_up` catch up from transaction 5.
-
-   ```erlang
-   handle_info({write, MFARec, _ActivityId}, State) ->
-       Node = node(),
-       case transaction(fun() -> handle_table_write_event(Node, MFARec) end) of
-           {atomic, catch_up} -> {noreply, State, {continue, catch_up}};
-           {abort, _Reason} -> {noreply, State, {continue, catch_up}};
-           {atomic, ok} -> {noreply, State, ?TIMEOUT}
-       end.
-   
-   handle_table_write_event(Node, #cluster_call_mfa{tnx_id = EventTnxId, mfa = MFA}) ->
-       DoneTnxId =
-           case mnesia:wread({?CLUSTER_CURSOR, Node}) of
-               [] -> EventTnxId - 1;
-               [#cluster_call_cursor{tnx_id = TnxId}] -> TnxId
+   get_next_mfa(Node) ->
+       Fun =
+           fun() ->
+               case mnesia:read(?CLUSTER_CURSOR, Node) of
+                   [] ->
+                       LatestId = get_latest_id(),
+                       mnesia:write(#cluster_rpc_cursor{node = Node, tnx_id = LatestId}),
+                       caught_up;
+                   [#cluster_rpc_cursor{tnx_id = DoneTnxId}] ->
+                       case mnesia:read(?CLUSTER_MFA, DoneTnxId + 1) of
+                           [] -> caught_up;
+                           [#cluster_rpc_mfa{mfa = MFA}] -> {still_lagging, DoneTnxId + 1, MFA}
+                       end
+               end
            end,
-       case EventTnxId =:= DoneTnxId + 1 of
-           false -> catch_up; %$% catch up latest id in catch_up/0
-           true ->
-               mnesia:write(#cluster_call_cursor{tnx_id = EventTnxId, node = Node}),
-               apply_mfa(Node, MFA)
+       transaction(Fun).
+   
+   get_latest_id() ->
+       case mnesia:last(?CLUSTER_MFA) of
+           '$end_of_table' -> 0;
+           Id -> Id
        end.
    ```
 
+3. If a new update operation is added, the `handler` will receive a write event of the `cluster_rpc_mfa` table.
+   When  `EventTxnId = DoneTnxId+1`, i.e. we have finished  transaction 4 and received the notification of transaction 5, we will execute transaction 5 directly, if we receive transaction 6, we will do nothing and let `catch_up` catch up from transaction 5.
+The write events should be discarded when in `catch_up` state.
    
-
-4. The first transaction must be executed in the `emqx_cluster_trans` process. if this transaction succeeds, the call returns success directly, if the transaction fails, the call aborts with failure.
+   ```erlang
+   handle_event(info, {mnesia_table_event, {write, MFARec, _ActivityId}}, ?IDLE, Data) ->
+       handle_mfa_write_event(MFARec, Data);
+   handle_event(info, {mnesia_table_event, {write, _MFARec, _ActivityId}}, ?CATCH_UP, _Data) ->
+       {keep_state_and_data, [?CATCH_UP_AFTER(1)]};
+   
+   handle_mfa_write_event(#cluster_rpc_mfa{tnx_id = TnxId, mfa = MFA}, Data) ->
+       Node = node(),
+       case transaction(fun() -> get_done_id(Node, TnxId - 1) end) of
+           {atomic, DoneTnxId} when DoneTnxId =:= TnxId - 1 ->
+               case apply_mfa(MFA) of
+                   ok ->
+                       Trans = fun() -> mnesia:write(#cluster_rpc_cursor{tnx_id = TnxId, node = Node}) end,
+                       case transaction(Trans) of
+                           {atomic, ok} -> {next_state, ?IDLE, Data, [?DEL_MFA_AFTER(5)]};
+                           _ -> {next_state, ?CATCH_UP, Data, [?CATCH_UP_AFTER(1)]}
+                       end;
+                   _ -> {next_state, ?CATCH_UP, Data, [?CATCH_UP_AFTER(1)]}
+               end;
+           {atomic, _DoneTnxId} -> {next_state, ?CATCH_UP, Data, [?CATCH_UP_AFTER(0)]};
+           _ -> {next_state, ?CATCH_UP, Data, [?CATCH_UP_AFTER(1)]}
+    end.
+   
+get_done_id(Node, Default) ->
+       case mnesia:wread({?CLUSTER_CURSOR, Node}) of
+           [#cluster_rpc_cursor{tnx_id = TnxId}] -> TnxId;
+           [] -> Default
+       end.
+   ```
+   
+4. The initial transaction must be executed in the `emqx_cluster_rpc_handler` process. if this transaction succeeds, the call returns success directly, if the transaction fails, the call aborts with failure.
 
    ```erlang
-   commit(Node, MFA) ->
-       case catch_up() of
-           retry -> {error, "catch up failed"};
-           ok ->
-               Trans = fun() -> apply_to_commit(Node, MFA) end,
-               transaction(Trans)
-       end.
-   apply_to_commit(Node, MFA) ->
+   handle_event({call, From}, {commit, MFA}, ?IDLE, Data) ->
+       Node = node(),
+       case transaction(fun() -> init_mfa(Node, MFA) end) of
+           {atomic, ok} ->
+               {keep_state, Data, [{reply, From, ok}, ?DEL_MFA_AFTER(5 * 60)]};
+           {aborted, Reason} ->
+               {keep_state, Data, [{reply, From, {error, Reason}}, ?DEL_MFA_AFTER(5 * 60)]}
+       end;
+   handle_event({call, From}, {commit, _MFA}, ?CATCH_UP, Data) ->
+       case catch_up(node(), Data) of
+           {next_state, ?IDLE, Data, _Actions} ->
+               {next_state, ?IDLE, Data, [{postpone, true}]};
+           _ ->
+               Reason = "There are still transactions that have not been executed.",
+               {keep_state, Data, [{reply, From, {error, Reason}}, ?CATCH_UP_AFTER(1)]}
+       end;
+   
+   init_mfa(Node, MFA) ->
        mnesia:write_lock_table(?CLUSTER_MFA),
-       #cluster_call_cursor{tnx_id = LastDoneId} = mnesia:read(?CLUSTER_CURSOR, Node),
-       #cluster_call_mfa{tnx_id = LatestId} = mnesia:last(?CLUSTER_MFA),
-       ok = do_catch_up_in_one_trans(LatestId, LastDoneId, Node),
+       LatestId = get_latest_id(),
+       ok = do_catch_up_in_one_trans(LatestId, Node),
        TnxId = LatestId + 1,
-       mnesia:write(#cluster_call_cursor{node = Node, tnx_id = TnxId}),
-       mnesia:write(#cluster_call_mfa{tnx_id = TnxId, mfa = MFA, initiator = Node, created_at = erlang:localtime()}),
-       apply_mfa(Node, MFA).
+       mnesia:write(#cluster_rpc_cursor{node = Node, tnx_id = TnxId}),
+       mnesia:write(#cluster_rpc_mfa{tnx_id = TnxId, mfa = MFA, initiator = Node, created_at = erlang:localtime()}),
+       ok = apply_mfa(MFA).
    
-   do_catch_up_in_one_trans(LatestId, LatestId, _Node) -> ok;
-   do_catch_up_in_one_trans(LatestId, LastDoneId, Node)when LatestId > LastDoneId ->
-       ToTnxId = LastDoneId + 1,
-       do_catch_up(Node, ToTnxId),
-       do_catch_up_in_one_trans(Node, LatestId, ToTnxId).  
+   do_catch_up_in_one_trans(LatestId, Node) ->
+       case do_catch_up(LatestId, Node) of
+           caught_up -> ok;
+           ok -> do_catch_up_in_one_trans(LatestId, Node);
+           _ -> mnesia:abort("catch up failed")
+       end.
    ```
 
-   **Risk point**: If the previous unfinished MFA in the `apply_to_commit` transaction is executed successfully, but the latest MFA fails and leads to abort,  it will roll back the previous unfinished MFA as well, thus causing the MFA to be executed again later. So MFA must be idempotent.
+   **Risk point**: If the previous unfinished MFA in the `init_mfa` transaction is executed successfully, but the latest MFA fails and leads to abort,  it will roll back the previous unfinished MFA as well, thus causing the MFA to be executed again later. So MFA must be idempotent.
 
-5. Because all ekka's transactions execute on core node, but the MFA should execute on all node. So we must do MFA with RPC:
+   If nodes A,B have completed transaction 4, and they are fighting to update transaction 5 at the same time, A finally gets transaction 5 and commits successfully, at this time, B can only update to transaction 6, when the event of transaction 5 has not reached node B, B got transaction 6, it will lead to the error that transaction 6 is executed before transaction 5. So we must check  if there are any uncompleted transactions in transaction 6(`do_catch_up_in_one_trans`).
+
+   In addition to this solution, we can also determine in `init_mfa` that if there are still transactions that have not been applied, then we will return an error directly.
+
+5. Only keep the latest completed 100 records for querying and troubleshooting, delete stale MFA after  5 minutes of entering `?IDLE` state.
+
+6. The MFA function must return ok if it is executed successfully, otherwise mark it as failed and retry later.
 
    ```erlang
-   apply_mfa(Node, {M, F, A}) ->
-       %% TODO log
-       try rpc:call(Node, M, F, A, 5 * 60 * 1000) of
-           ok -> ok;
-           {error, Reason} -> mnesia:abort({Node, Reason})
-       catch E:R -> mnesia:abort({Node, E, R})
+   apply_mfa({M, F, A}) ->
+       try erlang:apply(M, F, A)
+       catch E:R -> {error, {E, R}}
        end.
    ```
 
