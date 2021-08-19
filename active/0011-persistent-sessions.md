@@ -8,7 +8,7 @@
   * Add rejected proposal using restarting processes without message
     storing.
   * Add technical notes on the chosen alternative.
-
+* 2021-08-18 Expand on syncing of messages to persistent sessions
 ## Abstract
 
 Persistent sessions is today relying on that there is a process alive
@@ -140,9 +140,9 @@ connection process), but for persistent sessions the messages can also
 be stored in the database.
 
 When the message is delivered by a connection process, it can be
-deleted from the database, thus limiting the storage need, but keeping
-the persistence of the message. On resuming a session, the database
-table can be used to ensure that all messages are delivered.
+marked in the database as being delivered, allowing a garbage
+collection process to delete the message. On resuming a session, the
+database table can be used to ensure that all messages are delivered.
 
 To ensure the QoS the messages should be uniquely identifiable. The
 key should also be sortable by publisher, so a possible key would
@@ -157,9 +157,6 @@ To avoid bloating the db with undelivered messages, the actual message
 can be stored using the messageID. The suscribers can then be
 references to the message. The messages can be garbage collected by
 traversing the root set of message references.
-
-A simpler solution would be to duplicate the message for each
-persistent subscriber, but that would increase storage.
 
 This solution could come with different storage backends. One could
 imagine storing the messages in an external storage (e.g., MySQL) or
@@ -226,15 +223,6 @@ delegate to another process to persist the published message, but no
 publish acknowledgement can be given until the message is
 persisted.
 
-The connection process of a persistent session can keep markers for
-its latest delivered message and store it in the state. We need to
-preserve the order of messages from each publisher, which can be
-achieved by keeping a separate marker for each node in the
-cluster. Since the nodeID is a part of the messageID, it is simple to
-keep the markers separate. The state does not need to know the cluster
-nodes beforehand, but only note that a messageID from a node it didn't
-know about needs to be preserved.
-
 On resuming a session, the existing takeover proceedure should be used
 if it is possible (i.e., if there is a running connection process),
 but otherwise fall back to retrieving the last known state from the
@@ -242,6 +230,11 @@ local db and request any missed messages from the external db using
 the message markers.
 
 ![Pub-sub flows](0011-assets/flows.png)
+
+
+![Subscriber init FSM](0011-assets/init-fsm.png)
+
+
 
 ## Configuration Changes
 

@@ -1,0 +1,25 @@
+@startuml
+
+
+state init as "Init session"
+init: * Get pending messages from db
+init: * Subscribe to topics
+init: * Send pending messages to client
+init: * Send marker to writers
+init: * Discard messages from RTF if not marker
+
+state writers as "For all nodes" {
+  state sync1 as "Sync DB flow (DBF) with writer"
+  sync1: * Poll for pending messages in db
+  sync1: * Send messages earlier than marker from db to client
+
+  state sync2 as "Finalize sync with writer"
+  sync2: * Send buffered messages to client
+
+  [*] --> sync1  : Marker received from RTF
+  sync1 --> sync2 : Marker received from DBF
+}
+
+init --> writers
+
+@enduml
