@@ -9,6 +9,7 @@
     storing.
   * Add technical notes on the chosen alternative.
 * 2021-08-18 Expand on syncing of messages to persistent sessions
+* 2021-08-24 Expand on impact on the system
 ## Abstract
 
 Persistent sessions is today relying on that there is a process alive
@@ -176,8 +177,7 @@ Cons:
 
 ## Technical notes
 
-![Architecture](0011-assets/architecture.png)
-
+### High level description
 The major alternatives for persisting messages on publish for
 persistent sessions are:
 * Persist all messages on publish and find out later which ones are
@@ -237,6 +237,8 @@ if it is possible (i.e., if there is a running connection process),
 but otherwise fall back to retrieving the last known state from the
 local db and request any missed messages from the external db using
 the message markers.
+
+### Dataflows for persistent sessions
 
 ![Pub-sub flows](0011-assets/flows.png)
 
@@ -317,6 +319,21 @@ message send if the receiver is on the same node.
 When the subscriber receives the message, it delivers it and marks it
 as delivered in the DB table.
 
+### Writer processes
+
+The serialization of published messages to persistent sessions is
+needed to ensure delivery of messages without gaps or duplications (as
+described above). To ensure this serialization writer processes are
+introduced. The writers can be in a pool as long as the same session
+is always picking the same writer. This can be solved by hashing on
+the sessionID.
+
+Since the serialization is only needed while a persistent session is
+initializing, the writer could only be engaged during this time. The
+sync marker sent from the initializing process can engage the
+serialization, and another marker could end it and revert to ordinary
+flow. *TODO: Investigate this train of thought*
+
 ### Resuming a persistent session from DB
 
 ![Subscriber init FSM](0011-assets/init-fsm.png)
@@ -350,6 +367,57 @@ messages.
 In the final stage of initialization, the buffered messages are
 delivered. When this procedure is done for all writers, the session
 goes into normal operation mode.
+
+### Garbage collection of persistent data
+
+To limit the data growth of the system garbage collection should be
+implemented.
+
+* Any session message marked as both `UNDELIVERED` and `DELIVERED` can
+  be deleted.
+* All session messages for a session marked with clean start can be
+  deleted.
+* Session state for a session abandoned by a clean start can be
+  deleted.
+* Messages with no references from the session message table can be
+  deleted.
+
+Only the last garbage collection is problematic to implement, and it
+also concerns the table that is likely to grow the most.
+
+
+## Impact on the system
+
+In the current implementation, the system is not following mqtt
+standard with respect to persistent sessions if a node goes down while
+a persistent session is connected to it. Any knowledge of this
+persistent session is lost. The suggested solution will close this
+gap, but it comes at a price.
+
+#### Increased storage
+The storage of a node will increase with the new tables. This also
+means more database replication between nodes. The described solution
+does not incur more cluster-global transactions than today, but the
+amount of data in them will increase.
+
+#### Increased work for publishers
+Since connection processes are now tasked with persisting data on
+publish, either in their own context or by sending data to writer
+processes, the amount of work will increase in the presence of
+persistent sessions.
+
+#### Increased node tasks
+The amount of work for the nodes will increase by adding garbage
+collection and writer processes.
+
+#### Increased node communication
+Apart from increased database replication, a new synchronization point
+is added between an initializing session process and remote writers.
+
+#### Increased work for persistent sessions
+The start-up time for persistent sessions will increase because of
+more complicated initialization work. Apart from that, it also needs
+to persist its state whenever it changes.
 
 
 ## Configuration Changes

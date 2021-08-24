@@ -3,7 +3,9 @@
 participant Client                 as client
 participant "Connection\nProcess"  as connection
 participant emqx_cm_locker         as locker
-database Mnesia                    as mnesia
+box "Mnesia replication\nin the cluster"
+  database Mnesia                  as mnesia
+end box
 box "Possibly Other Node"
   participant "emqx_cm_locker"     as other_locker
   participant "Connection"         as other_connection

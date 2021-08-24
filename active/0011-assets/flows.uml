@@ -3,7 +3,9 @@
 actor Subscriber as sub
 participant Connection as subcon
 participant Broker as broker
-database Mnesia as mnesia
+box "Mnesia replication\nin the cluster"
+  database Mnesia as mnesia
+end box
 box "Possibly other node"
   participant Writer as writer
   participant Connection as pubcon
