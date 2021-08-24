@@ -191,24 +191,33 @@ Since we are dealing with a distributed environment, we need to
 address the delta time of information spread, and we need to limit the
 stored information.
 
-We take the stanse that if a publishing node does not have the
-information that a persistent session should get a message through its
-subscription, the message should not be persisted, i.e., we don't try
-to close the delta time of the subscription information spread
-throughout the cluster. We note that this is analogous to the way
-ordinary subscriptions work as well.
+We propose to spread knowledge about subscriptions for persistent
+sessions in the same manner as the ordinary routing. Either by
+piggy-backing on the same data structures as today, or by introducing
+a parallel set of data structures for persistent sessions.
 
-However, it would be beneficial if we can find a way of avoid
-spreading too much information on a cluster-global level.
+Subscriptions is today handled with a global lock or a transaction to
+ensure information spread throughout the cluster. The content of the
+transaction is the topic filter and which node has further
+information. The routing is staged into
+
+1. Lookup the topic in a trie to find relevant subscribe topic filters.
+1. Lookup the topic filter in a database table to find which node the
+   subscriber is on.
+1. Send the message to the relevant nodes, where a local lookup finds
+   the pids.
 
 We propose using a trie to store the global information about which
 wildcard topic filters that are subscribed by a persistent session. In
 addition, a global mapping from topic filter (including non-wildcards)
-to sessionID should be kept for direct lookup.
+to sessionID should be kept for direct lookup. This can be done either
+in a separate trie and table, or by extending the content of the
+current tables.
 
 We propose a database backend for storing the actual messages, and a
 mapping between sessionID and a reference to the message (i.e.,
-messageID) for retrieval of messages for a persistent session.
+messageID) for retrieval of messages for a persistent session. The
+message store could be external to save space on the node.
 
 We propose that the messages from the database backend only should be
 used when resuming a persistent session, i.e., the messages to a
@@ -231,14 +240,122 @@ the message markers.
 
 ![Pub-sub flows](0011-assets/flows.png)
 
+### ClientID and SessionID
+
+In the external client API a persistent session is called `clientID`,
+but inside the system `clientID` and `sessionID` is currently used
+interchangably. We propose to introduce a difference between the two
+terms.
+
+* `clientID` - The external name for a session that can be persistent
+  , used in communication with clients.
+* `sessionID` - The name for a persistent session externally described
+  by `clientID`.
+
+Whenever a client requests a clean session, a fresh sessionID can be
+constructed, containing the original clientID (or a hash thereof) to
+find if a sessionID belongs to a certain clientID.
+
+Since a clean start should discard the old session, we want to prevent
+messages routed for any old session with the same clientID to reach
+the client. Subscriptions should be made using the sessionID rather
+than the clientID to cut off the flow of messages to the new session.
+
+### Database model
+
+Persistent sessions can be implemented using the following tables
+
+* Session state
+* Session routing trie
+* Session subscriptions
+* Session messages
+* Messages
+
+The session state is represented by the `#session{}` record, keyed by
+the `clientID`, and containing the current `sessionID`. It contains
+the current subscriptions, in-flight messages (i.e., messages
+delivered but not acked), some queued messages etc.
+
+The session routing trie and the session substriptions tables is
+similar to the normal routing trie, but it contains only persistent
+sessions, and instead of the node/pid of the connection process, it
+contains the `sessionID`.
+
+The session messages table is keyed by a combination of the
+`sessionID`, the `messageID` (which is sortable by time by
+construction), and a new flag marking the entry as `DELIVERED` or
+`UNDELIVERED`. Note that the flag is part of the key. This will make
+messages eventually having two entries, after which both entries can
+be removed by a garbage collector. This model is chosen to avoid
+database transactions to flip the flag once the message is delivered.
+
+The session messages table can also contain an entry to mark a
+`sessionID` as abandoned by a clean start. This information can then
+tell the garbage collection to discard all messages for this
+`sessionID` (i.e., even the undelivered ones).
+
+The messages table is the store for messages, keyed by the `messageID`
+to avoid duplication of the message payload.
+
+### Message routing to persistent sessions
+
+When a message is received from the publishing client, the route is
+looked up in mnesia. If the receiver is a persistent session, the
+message is persisted to the DB.
+
+In order to ensure message delivery without duplication or gaps, the
+message is sent to a writer process. This is important only on
+resuming a persistent session from the DB state, but since we can't
+tell when this would be happening, the serialization through the
+writer needs to happen always.
+
+The writer is responsible for persisting the delivery details to the
+session messages table, and then for sending the message in the normal
+way, i.e., either through a rpc to the remote node or by erlang
+message send if the receiver is on the same node.
+
+When the subscriber receives the message, it delivers it and marks it
+as delivered in the DB table.
+
+### Resuming a persistent session from DB
 
 ![Subscriber init FSM](0011-assets/init-fsm.png)
 
+Resuming a session from a live connection (takeover) is not affected
+by the new implementation apart from persisting the state once the
+session is resumed. Resuming a session from the DB state if the
+connection is gone is a bit more involved.
+
+The connection process is registered under the same sessionID as
+before since this is not a clean start. The state is retrieved from
+the DB. This happens in the context of a cluster-global transaction.
+
+All pending messages are fetched from the DB, but we cannot be sure
+that these are all the messages that we need to deliver.
+
+After this, all the sessions' subscriptions are resubscribed in a
+cluster-global transation. Once this is done a sync message is sent to
+the relevant writers on all nodes. The writers will send the marker in
+response through both the routing protocol and persist the marker to
+the database.
+
+The session process drops all messages from a writer until the marker
+appears. When it has received the marker, it starts buffering all
+messages from the writer. It polls the database for pending messages
+until the marker appears in the result. All messages before the marker
+in the database are sent to the client, and all messages in the DB
+after the marker are discarded since they should be among the buffered
+messages.
+
+In the final stage of initialization, the buffered messages are
+delivered. When this procedure is done for all writers, the session
+goes into normal operation mode.
 
 
 ## Configuration Changes
 
-> This section should list all the changes to the configuration files (if any).
+> This section should list all the changes to the configuration files
+> (if any).
 
 ## Backwards Compatibility
 
