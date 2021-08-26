@@ -196,7 +196,7 @@ sessions in the same manner as the ordinary routing. Either by
 piggy-backing on the same data structures as today, or by introducing
 a parallel set of data structures for persistent sessions.
 
-Subscriptions is today handled with a global lock or a transaction to
+Subscriptions are today handled with a global lock or a transaction to
 ensure information spread throughout the cluster. The content of the
 transaction is the topic filter and which node has further
 information. The routing is staged into
