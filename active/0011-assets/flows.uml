@@ -14,9 +14,9 @@ actor Publisher as pub
 
 == Clean start ==
 sub -> subcon : Connect\n(Session-Expiry > 0,\nClean-Start: 1)
-group Cluster-global transaction
+group ClientID lock aquired (in cluster)
   subcon -> mnesia : Register (fresh) sessionID\nbased on clientID
-  subcon -> mnesia : Clean start
+  subcon -> mnesia : Clean start\n(discard old sessionID)
 end
 
 == Subscribe ==
@@ -46,7 +46,7 @@ subcon -> mnesia : mark as delivered
 
 == Persistent resume (connection gone) ==
 sub -> subcon : Connect\n(Session-Expiry > 0,\nClean-Start: 0)
-group Cluster-global transaction
+group ClientID lock aquired (in cluster)
   subcon -> mnesia : Register under the same sessionID as before
   subcon -> mnesia : Get state
 end group
