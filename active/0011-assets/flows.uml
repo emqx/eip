@@ -3,50 +3,83 @@
 actor Subscriber as sub
 participant Connection as subcon
 participant Broker as broker
-database Mnesia as mnesia
-database External as external
-participant Helper as helper
-participant Connection as pubcon
+box "Mnesia replication\nin the cluster"
+  database Mnesia as mnesia
+end box
+box "Possibly other node"
+  participant Writer as writer
+  participant Connection as pubcon
+end box
 actor Publisher as pub
 
 == Clean start ==
 sub -> subcon : Connect\n(Session-Expiry > 0,\nClean-Start: 1)
-subcon -> mnesia : Register sessionID
-subcon -> external : Clean start
+group ClientID lock aquired (in cluster)
+  subcon -> mnesia : Register (fresh) sessionID\nbased on clientID
+  subcon -> mnesia : Clean start\n(discard old sessionID)
+end
 
 == Subscribe ==
 sub -> subcon : Subscribe
-subcon -> mnesia : Store topic filter in trie\nand session table
+subcon -> broker : Subscribe
+group Cluster-global transaction
+  broker -> mnesia : Store topic filter in trie and\nsession table
+end group
 subcon -> sub : suback
 
 == Publish ==
 pub -> pubcon : publish
-pubcon -> broker : message
 pubcon -> mnesia : lookup topic in trie for\npersistent session
-broker -> subcon : message
-pubcon -> helper : persist message
-subcon -> sub : message
-helper -> mnesia : lookup sessionID
+pubcon -> mnesia : persist message
+pubcon -> writer : message
+writer -> mnesia : lookup sessionID
+writer -> mnesia : persist session\nmessage details
 rnote over pubcon
   Still responsive
 endrnote
-subcon -> mnesia : update marker
-helper -> external : persist message
-helper -> pubcon : ack
+writer -> subcon : message (RPC or direct send)
+subcon -> sub : message
+writer -> pubcon : ack
 pubcon -> pub : puback
+subcon -> mnesia : mark as delivered
+
 
 == Persistent resume (connection gone) ==
 sub -> subcon : Connect\n(Session-Expiry > 0,\nClean-Start: 0)
-subcon -> mnesia : Register sessionID
-subcon -> mnesia : Get state\nincluding markers
-subcon -> broker : Subscribe to topics
-subcon -> external : Get pending messages
-rnote over subcon
-  Queue online messages
-end rnote
-group Repeat until queue is empty
-  subcon -> sub : pending message
-  subcon -> mnesia : update marker
+group ClientID lock aquired (in cluster)
+  subcon -> mnesia : Register under the same sessionID as before
+  subcon -> mnesia : Get state
 end group
+group Recovery state machine
+  subcon -> mnesia : Get all pending messages
+  subcon -> sub : Pending messages
+  subcon -> mnesia : Mark as delivered
+  group Cluster-global transaction
+    subcon -> broker : Subscribe to topics (transaction)
+  end group
+  group For all writers in parallel
+    subcon -> writer : Sync marker
+    rnote over subcon
+      Drop all incoming messages from writer
+      These messages will eventually come
+      from the DB
+    end rnote
+    writer -> subcon : Sync marker
+    group Wait (poll) for marker in DB (in pending messages)
+      rnote over subcon
+        Buffer messages from writer
+      end rnote
+      subcon -> mnesia : Get pending messages from writer
+      subcon -> sub : pending messages
+      subcon -> mnesia : Mark as delivered
+    end group
+    writer -> mnesia : Sync marker
+    mnesia -> subcon : Sync marker
+    subcon -> sub : buffered messages from writer
+    subcon -> mnesia : Mark as delivered
+  end group
+  rnote over subcon
+    Normal operations
+  end rnote
 
 @enduml
