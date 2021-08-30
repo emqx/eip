@@ -2,7 +2,8 @@
 
 ## Changelog
 
-* 2021-08-11: @zhongwencool Initial draft
+* 2021-08-11: @zhongwencool Initial draft.
+* 2021-08-30: @zhongwencool add "How to confirm that the commit has succeeded?." section.
 
 ## Abstract
 
@@ -30,8 +31,8 @@ This proposal is not applicable to high frequency request calls, all updates are
 ### mnesia table structure
 
 ```erlang
--record(cluster_rpc_mfa, {tnx_id :: pos_integer(), mfa :: mfa(), created_at :: calendar:datetime(), initiator :: node()}).
--record(cluster_rpc_cursor, {node :: node(), tnx_id :: pos_integer()}).
+-record(cluster_rpc_mfa, {tnx_id :: pos_integer(), mfa :: mfa(), created_at :: calendar:datetime(), initiator :: node(), from :: pid()}).
+-record(cluster_rpc_commit, {node :: node(), tnx_id :: pos_integer()}).
 mnesia(boot) ->
     ok = ekka_mnesia:create_table(?CLUSTER_MFA, [
         {type, ordered_set},
@@ -39,25 +40,25 @@ mnesia(boot) ->
         {rlog_shard, ?COMMON_SHARD},
         {record_name, cluster_rpc_mfa},
         {attributes, record_info(fields, cluster_rpc_mfa)}]),
-    ok = ekka_mnesia:create_table(?CLUSTER_CURSOR, [
+    ok = ekka_mnesia:create_table(?CLUSTER_COMMIT, [
         {type, set},
         {disc_copies, [node()]},
         {rlog_shard, ?COMMON_SHARD},
-        {record_name, cluster_rpc_cursor},
-        {attributes, record_info(fields, cluster_rpc_cursor)}]);
+        {record_name, cluster_rpc_commit},
+        {attributes, record_info(fields, cluster_rpc_commit)}]);
 mnesia(copy) ->
     ok = ekka_mnesia:copy_table(cluster_rpc_mfa, disc_copies),
-    ok = ekka_mnesia:copy_table(cluster_rpc_cursor, disc_copies).
+    ok = ekka_mnesia:copy_table(cluster_rpc_commit, disc_copies).
 ```
 
 - `tnx_id` is strictly +1 incremental, all executed transactions must be executed in strict order, if there is node 1 executing transaction 1, 2, 3, but node 2 keeps failing in executing transaction 2 after executing transaction 1, it will keep retrying transaction 2 until it succeeds before executing transaction 3.
 
-- `cluster_call_cursor` :   Records the maximum `tnx_id` executed by the node. All transactions less than this id have been executed successfully on this node.
+- `cluster_call_commit` :   Records the maximum `tnx_id` executed by the node. All transactions less than this id have been executed successfully on this node.
 - `cluster_call_mfa`: `ordered_set`:  Records the MFA for each `tnx_id` in pairs. Keep the latest completed 100 records for querying and troubleshooting.
 
 ### Flow
 
-1. `emqx_cluster_rpc_handler` register as `gen_server` on each node, subscribes to the mnesia table simple event, and is responsible for the execution of all transactions.
+1. `emqx_cluster_rpc` register as `gen_server` on each node, subscribes to the mnesia table simple event, and is responsible for the execution of all transactions.
 
 2. `handler` init will catch up latest tnx_id. if node's tnx_id is 5, but latest MFA's tnx_id is 10, it will try to run MFA from 6 to 10 by 5 transactions.
 
@@ -152,6 +153,7 @@ mnesia(copy) ->
            ok -> do_catch_up_in_one_trans(LatestId, Node);
            _ -> mnesia:abort("catch up failed")
        end.
+   ```
 
    **Risk point**: If the previous unfinished MFA in the `init_mfa` transaction is executed successfully, but the latest MFA fails and leads to abort,  it will roll back the previous unfinished MFA as well, thus causing the MFA to be executed again later. So MFA must be idempotent.
 
@@ -170,13 +172,26 @@ mnesia(copy) ->
        end.
    ```
 
+7. How to confirm that the commit has succeeded?
+
+   There is a difference in the definition of success required by each caller, where a strong requirement is that all nodes succeed before returning success, and a more lenient requirement is that only the local node call succeeds. Therefore, it is necessary to add the parameter `SucceedNum(1-all)` to the API to tell the caller how many nodes succeeded so that the caller can be informed of success. If no specified number of nodes succeeded within the specified time, the failed node was not executed successfully is returned.
+
+   PS: If set to all, it will never succeed when the existing nodes are not online.
+
+   Implementation details:  Add from field (caller PID) in MFA table to indicate who is the caller? Used to return the result to the caller, after the successful execution of MFA, send the PID success information.
+
+   The caller waits synchronously until the number of successes equals SucceedNum and then returns successfully. If the condition is not met by the time, the failed node that is retrying are returned.
+
 ### API Design
 
 ```erlang
--spec(emqx_cluster_rpc:call(Nodes,MFA) -> {ok,TnxId}|{error,Reason} when
-                          Nodes :: [node()],
-                          MFA :: {module(),atom(),[term()]},                          
-                          TxnId :: pos_integer()}].  
+-spec(emqx_cluster_rpc:call(M,F,A, SucceedNum) -> {ok,TnxId,Result}|{error,Reason} when                          
+                          M :: module(),
+                          F :: atom(),
+                          A :: [term()],
+                          SucceedNum :: pos_integer() | all,
+                          Result :: ok |{ok, term()},
+                          TxnId :: pos_integer().
 -spec(emqx_cluster_rpc:reset() -> ok.
 -spec(emqx_cluster_rpc:status() -> [#{tnx_id => pos_integer(), mfa => mfa(), 
                                       pending_node => [node()],
