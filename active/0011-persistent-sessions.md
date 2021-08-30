@@ -92,7 +92,7 @@ Start` is set to 0) the session state needs to be taken over.
 The current implementation works fine as long as the old connection
 process is still alive when the new connection to the same client id
 is established. The process could have died because of a bug or, more
-prominently, the node is resided on is restarted.
+prominently, the node it resided on is restarted.
 
 The current implementation relies on that there is an active process
 acting as the subscriber for the session, and the session state is
@@ -376,9 +376,9 @@ implemented.
 * Any session message marked as both `UNDELIVERED` and `DELIVERED` can
   be deleted.
 * All session messages for a session marked with clean start can be
-  deleted.
+  deleted. The same goes for expired sessions.
 * Session state for a session abandoned by a clean start can be
-  deleted.
+  deleted. The same goes for expired sessions.
 * Messages with no references from the session message table can be
   deleted.
 
