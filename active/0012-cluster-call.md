@@ -3,7 +3,7 @@
 ## Changelog
 
 * 2021-08-11: @zhongwencool Initial draft.
-* 2021-08-30: @zhongwencool add "How to confirm that the commit has succeeded?." section.
+* 2021-08-30: @zhongwencool add "How to confirm that the commit has succeeded?" section.
 
 ## Abstract
 
@@ -31,7 +31,7 @@ This proposal is not applicable to high frequency request calls, all updates are
 ### mnesia table structure
 
 ```erlang
--record(cluster_rpc_mfa, {tnx_id :: pos_integer(), mfa :: mfa(), created_at :: calendar:datetime(), initiator :: node(), from :: pid()}).
+-record(cluster_rpc_mfa, {tnx_id :: pos_integer(), mfa :: mfa(), created_at :: calendar:datetime(), initiator :: node()}).
 -record(cluster_rpc_commit, {node :: node(), tnx_id :: pos_integer()}).
 mnesia(boot) ->
     ok = ekka_mnesia:create_table(?CLUSTER_MFA, [
@@ -163,7 +163,7 @@ mnesia(copy) ->
 
 5. Only keep the latest completed 100 records for querying and troubleshooting
 
-6. The MFA function must return ok if it is executed successfully, otherwise mark it as failed and retry later.
+6. The MFA function must return `ok|{ok, any()}` if it is executed successfully, otherwise mark it as failed and retry later.
 
    ```erlang
    apply_mfa({M, F, A}) ->
@@ -174,13 +174,16 @@ mnesia(copy) ->
 
 7. How to confirm that the commit has succeeded?
 
-   There is a difference in the definition of success required by each caller, where a strong requirement is that all nodes succeed before returning success, and a more lenient requirement is that only the local node call succeeds. Therefore, it is necessary to add the parameter `SucceedNum(1-all)` to the API to tell the caller how many nodes succeeded so that the caller can be informed of success. If no specified number of nodes succeeded within the specified time, the failed node was not executed successfully is returned.
+   There is a difference in the definition of success required by each caller, where a strong requirement is that all nodes succeed before returning success, and a more lenient requirement is that only the local node call succeeds. Therefore, it is necessary to add the parameter `SucceedNum(1~all)` to the API to tell the caller how many nodes succeeded so that the caller can be informed of success. If no specified number of nodes succeeded within the specified time, the failed node was not executed successfully is returned.
 
    PS: If set to all, it will never succeed when the existing nodes are not online.
 
-   Implementation details:  Add from field (caller PID) in MFA table to indicate who is the caller? Used to return the result to the caller, after the successful execution of MFA, send the PID success information.
+   Implementation details:  After the first initiator apply succeeds, do not return the result to the caller immediately, periodically check whether the number of successful nodes in the mfa table meets the requirement, and return success if the condition is met. If the requirement is not met after timeout, the failed node is returned.
 
-   The caller waits synchronously until the number of successes equals SucceedNum and then returns successfully. If the condition is not met by the time, the failed node that is retrying are returned.
+   Alternative: Add `from` field (caller PID) in MFA table to indicate who is the caller? Used to return the result to the caller, after the successful execution of MFA, send the PID success information. This proposal has one drawback: since it is impossible to monitor other processes, when there are 3 nodes, success will return 3 messages, but when the number of successes is set to 2, there will be a message left in the mailbox without knowing what to do with it.
+   
+8. What are the fixes for the case that the transaction keeps failing?
+   If a node keeps retrying MFA unsuccessfully, subsequent transactions for this node will not be processed. The customer can manually specify the corresponding node to skip this doomed error commit after knowing explicitly that the error cannot be handled.
 
 ### API Design
 
@@ -192,6 +195,7 @@ mnesia(copy) ->
                           SucceedNum :: pos_integer() | all,
                           Result :: ok |{ok, term()},
                           TxnId :: pos_integer().
+-spec(emqx_cluster_rpc:skip_failed_commit(Node) -> ok.
 -spec(emqx_cluster_rpc:reset() -> ok.
 -spec(emqx_cluster_rpc:status() -> [#{tnx_id => pos_integer(), mfa => mfa(), 
                                       pending_node => [node()],
