@@ -14,125 +14,174 @@ To implement the HTTP REST API interface, the developer needs to maintain a sepa
 
 ## Design
 
-### Plain style example
+### Basic Structure
 
-1. Defining the code SPEC specification
+we define a basic structure.
+
+```erlang
+paths() -> ["/user/:user_id"].
+
+schema("/user/:user_id") ->
+   #{operationId => user}.
+```
+
+It defines all the paths of this spec, specify a unique `operationId`.  Using this value to name the corresponding methods in code.
+
+### Operations
+
+For each path, we define operations (HTTP methods) that can be used to access that path. A single path can support multiple operations, for example, `GET /users` to get a list of users and `POST /users` to add a new user. we defines a unique operation as a combination of a path.. Minimal example of an operation:
+
+```erlang
+schema("/user/:user_id/:fingerprint") ->
+   #{
+       operationId => user,
+       get => #{response => 
+                  #{200 => 
+                      hocon:mk(hoconsc:ref(?MODULE, "user"), 
+                               #{description => <<"return self user informations">>})}               
+    }.
+```
+
+Operations also support some optional elements for documentation purposes: `summary, description, tags`.
+
+### Query String in Paths
+
+ Query string paramters is defined as query parameters:
+
+```erlang
+#{put =>
+  #{
+   parameters => [
+    {user_id, hoconsc:mk(string(), #{in => path, description => <<"The client ID of your Emqx app">>, example => <<"an long client id">>})},                
+    {per_page, mk(range(1, 50), #{required => true, in => query, example => "10"})},
+    {is_admin, mk(boolean(), #{required => true, in => query, example => "true"})},  
+    {oneof_test_in_query, mk(hoconsc:union([string(), integer()]), #{in => query, example => "a_good_oneof_in_query"})}
+   ]}}
+```
+
+will generate a swagger json:
+
+```json
+parameters: [
+   {example: "a_good_oneof_in_query",
+    in: "query",
+    name: "oneof_test_in_query",
+    schema: {
+      oneOf: [
+        {example: 100,
+         type: "integer"},
+        {example: "string example",
+         type: "string"}]}},
+   {example: "true",
+    in: "query",
+    name: "is_admin",
+    required: true,
+    schema: {
+      example: true,
+      type: "boolean"}},
+  {example: "10",
+   in: "query",
+   name: "per_page",
+   required: true,
+   schema: {
+     example: 1,
+     maximum: 50,
+     minimum: 1,
+     type: "integer"}},   
+   {description: "The client ID of your Emqx app",
+    example: "an long client id",
+    in: "path",
+    name: "client_id",
+    required: true,
+    schema: {
+      example: "string example",
+      type: "string"}}].
+```
+
+### Request Body
+
+Request bodies are typically used with “create” and “update” operations (POST, PUT, PATCH). For example, when creating a resource using POST or PUT, the request body usually contains the representation of the resource to be created. OpenAPI 3.0 provides the `requestBody` keyword to describe request bodies.
+
+```erlang
+#{requestBody =>
+  #{
+    client_secret => mk(string(), #{description => <<"The OAuth app client secret for which to create the token.">>, maxLength => 40}),
+    scopes => mk(hoconsc:array(string()), #{<<"description">> => "A list of scopes that this authorization is in.", example => ["public_repo", "user"], nullable => true}),
+    test => mk(hoconsc:enum([test, good]), #{<<"description">> => "good", example => test}),
+    note => mk(string(), #{description => <<"A note to remind you what the OAuth token is for.">>, example => <<"Update all gems">>}),
+    note_url => mk(string(), #{description => <<"A URL to remind you what app the OAuth token is for.">>}),
+    page => mk(range(1, 100), #{description => <<"Page Description.">>}),
+    ip => mk(emqx_schema:ip_port(), #{description => <<"ip:port">>, example => "127.0.0.1:8081"}),
+    oneof_test => mk(hoconsc:union([range(1, 100), infinity, hoconsc:ref(?MODULE, client_id)]), #{description => "oneof description", example => "1"})
+   }}.
+```
+
+ RequestBody is json object. If we have too much nesting, we can use `hoconsc:ref/2` to make the code a little clearer. such as:
+
+`hoconsc:ref(?MODULE, client_id)` will call `?MODULE:fields(client_id)` to get specific schema.
+
+### Responses
+
+```erlang
+#{responses => 
+  #{
+   200 => mk(hoconsc:ref(?MODULE, "authorization"), #{description => <<"if returning an existing token">>}),
+   422 => mk(hoconsc:ref(?MODULE, "validation_failed"), #{}),
+   400 => mk(hoconsc:array(hoconsc:ref(?MODULE, "authorization")), #{}),
+   401 => #{
+            total_count => mk(integer(), #{required => true}),
+            artifacts => mk(hoconsc:array(hoconsc:ref(?MODULE, "authorization")), #{})
+           },
+   203 => maps:from_list(emqx_schema:fields("authorization"))
+  }}.
+```
+
+will generate swagger.json:
+
+```json
+responses: {
+  200: {
+    description: "if returning an existing token",
+    content: {application/json: {schema: {$ref: "#/components/schemas/emqx_swagger_api.authorization"}}}},
+  203: {description: "",content: {application/json: {schema: {properties: {cache:   
+                {$ref:"#/components/schemas/emqx_schema.cache"},
+        deny_action: {
+            default: "ignore",
+            enum: ["ignore","disconnect"],
+            type: "string"},
+        no_match: {default: "allow",enum: ["allow","deny"],type: "string"}},
+        type: "object"}}}},
+   400: {
+     description: "",
+     content: {
+     application/json: {
+     schema: {items: {$ref: "#/components/schemas/emqx_swagger_api.authorization"},
+     type: "array"}}}},
+   401: {description: "",content: {application/json: {schema: {required: ["total_count"],
+         properties: {
+         artifacts: {items: {$ref: "#/components/schemas/emqx_swagger_api.authorization"},type: "array"},
+         total_count: {example: 100,type: "integer"}},
+         type: "object"}}}},  
+   422: {description: "",content: 
+         {application/json: {schema: {$ref: "#/components/schemas/emqx_swagger_api.validation_failed"}}}}}
+}.
+```
+
+Only json format is needed for now
+
+1. The developer writes the specific implementation code, due to the entry check has been done by the code SPEC above, so the specific implementation code can be used directly without parameter verification.
 
    ```erlang
-   ## plain style
-   spec("/login") ->
-       #{post => #{
-           tags => [dashboard],
-           description => <<"Dashboard Auth">>,
-           summary => <<"Dashboard Auth Summary">>,
-           requestBody => #{
-               <<"username">> => prop(string(), <<"username desc">>, <<"admin">>),
-               <<"password">> => prop(string(), <<"password desc">>, <<"public">>)
-           },
-           responses => #{
-               200 => #{
-                   description => <<"Dashboard Auth successfully">>,
-                   content => #{
-                       <<"token">> => prop(string(), <<"JWT token">>, <<"token">>),
-                       <<"version">> => prop(string(), <<"EMQX verison">>, <<"5.0.0">>),
-                       <<"license">> => prop(#{<<"edition">> => prop(union(community, enterprise), <<"Edition Desc">>, community)},
-                           <<"License Desc">>)
-                   }},
-               401 =>
-               #{description => <<"Dashboard Auth failed">>,
-                   content => #{
-                       <<"code">> => prop(union('PASSWORD_ERROR', 'USERNAME_ERROR'), <<"password or username error">>, 'PASSWORD_ERROR'),
-                       <<"message">> => prop(string(), <<"specific messages">>, <<"Password not match">>)}
-               }},
-           security => []
-       }};
+   user(put, #{body := Params}) ->
+       #{<<"ip">> := {IP, Port} = Params, %% the {IP Port} has already converted by schema.
+        ....
+       {200, #{...response json..}}.
    
    ```
 
-2. According to the SPEC above, swagger SPEC can be generated.
+We no longer need to update swagger.json manually. 
 
-   ```json
-   /login: {
-   post: {
-       description: "Dashboard Auth",
-       summary: "Dashboard Auth Summary",
-       parameters: [ ],
-       requestBody: {
-             content: {
-               application/json: {
-                schema: {
-                 properties: {
-                   password: {description: "passwword desc",type: "string", default: "public"},
-                   username: {description: "username desc",type: "string", default: "admin"}},
-                 type: "object"}}}},
-       responses: {
-         200: {
-           content: {
-             application/json: {
-             schema: {
-             properties: {
-             license: {
-                properties: {
-                  edition: {description: "License",enum: ["community","enterprise"],type: "string"}},
-               type: "object"},
-             token: {description: "JWT Token",type: "string", default: "token"},
-             version: {type: "string", default: "5.0.0"}},
-           type: "object"}}},
-           description: "Dashboard Auth successfully"
-         },
-         401: {
-           content: {
-             application/json: {
-             schema: {
-             properties: {
-             code: {description: "password ...",enum: ["PASSWORD_ERROR","USERNAME_ERROR"],type: "string"},
-             message: {type: "string"}},type: "object"}}},
-             description: "Dashboard Auth failed"
-         }
-       },
-   security: [ ],
-   tags: ["dashboard"]}
-   }
-   ```
-
-3. The developer writes the specific implementation code, due to the entry check has been done by the code SPEC above, so the specific implementation code can be used directly without parameter verification.
-
-   ```erlang
-   login(post, #{body := Params}) ->
-       #{<<"username">> := Username, <<"password">>  := Password} = Params,
-       case emqx_dashboard_admin:sign_token(Username, Password) of
-           {ok, Token} ->
-               Version = iolist_to_binary(proplists:get_value(version, emqx_sys:info())),
-               {200, #{token => Token, version => Version, license => #{edition => ?RELEASE}}};
-           {error, Code} ->
-               {401, #{code => Code, message => <<"Auth filed">>}}
-       end.
-   ```
-
-### Scheme Style example
-
-Defining the code SPEC specification：
-
-```erlang
-spec("/schema/style/:id") ->
-    #{get => #{
-        description => "List authorization rules",
-        parameters => #{
-            path => [param(id, range(1, 100), #{description => "rule id", default => 20, example => 200})],
-            query => [param(username, schema(<<"username">>), #{required => false})],
-            header => [param('X-Request-ID', schema(<<"x-reqeust-id">>), #{required => false})]
-        },
-        responses => #{
-            200 => resp(list(from_hocon_spec(emqx_rule, rule), #{description => "ok"}),
-            400 => resp(schema(<<"rule_400">>))}
-    }}
-```
-
-We can define our own schema(`schema(<<"username">>)`),  or reuse the hocon spec's schema (`from_hocon_spec(emqx_rule,rule)`).
-
-
-
-We no longer need to update swagger.json manually.
+We don't check response schema, the repsonse schema only use for generate swagger.json.
 
 ## Configuration Changes
 
