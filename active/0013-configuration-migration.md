@@ -3,6 +3,7 @@
 ## Change log
 
 * 2021-09-09: @k32 Initial draft
+* 2021-09-15: @k32 Reduce the scope. Add description of the UI
 
 ## Abstract
 
@@ -11,7 +12,8 @@ This procedure should replace the JSON configuration dumps.
 
 ## Motivation
 
-Upgrading the EMQ X cluster between major releases requires redeployment of the cluster.
+Upgrading the EMQ X cluster between major and minor releases requires redeployment of the cluster.
+User-defined ACL chains, user accounts, and other data is persisted in mnesia, and this data needs to be migrated to the new cluster.
 Currently runtime data is migrated by dumping it to a JSON file and importing it as described here:
 https://docs.emqx.io/en/broker/v4.3/advanced/data-import-and-export.html#data-import-and-export
 
@@ -22,11 +24,6 @@ We propose to use binary dumps instead, starting from EMQ X 5.0.
 
 A new `emqx_metadata` mnesia table should be added.
 Mnesia has a checkpoint feature that can be used to perform a backup.
-TODO: decide the best way to include data from the external databases (MySQL, MongoDB, etc.) to the backup.
-
-Two types of data migration will be supported:
-1. Online data migration between patch releases
-1. Offline data migration between major and minor releases
 
 ### Export
 
@@ -35,8 +32,6 @@ The following steps will be used to export data:
 1. Activate a local mnesia checkpoint
 1. Backup the checkpoint to a BUP file using the standard mnesia backup callback module
 1. `emqx_metadata` table should be always added to the BUP file
-1. Hocon configuration dump should be added to the BUP file
-1. TODO: dump other data ?
 
 ### Import
 
@@ -68,10 +63,10 @@ There should be an Erlang module called `emqx_upgrade` that collects all upgrade
 -export([upgrade_hooks/0]).
 
 upgrade_hooks() ->
-   %% Num | Intruduced in release | Allow online | Function
-    [ {100, "5.1.0",                false,         fun upgrade_lib_baz/2}
-    , {99,  "5.0.1",                true,          fun lib_bar:upgrade_lib_bar/2}
-    , {98,  "5.0.0",                false,         fun lib_foo:upgrade_lib_foo/2}
+   %% Num | Intruduced in release | Function
+    [ {100, "5.1.0",                fun upgrade_lib_baz/2}
+    , {99,  "5.0.1",                fun lib_bar:upgrade_lib_bar/2}
+    , {98,  "5.0.0",                fun lib_foo:upgrade_lib_foo/2}
     ...
     ].
 
@@ -79,11 +74,10 @@ upgrade_lib_baz(_From, _To = "5.1.0") ->
   mnesia:transform_table(...).
 ```
 
-Every upgrade hook definition contains four fields:
+Every upgrade hook definition contains the following fields:
 
 1. A strictly decreasing number of the upgrade hook
 1. Version of EMQ X release where this upgrade hook has been introduced, non-increasing
-1. "Allow online" flag, that specifies whether or not the hook can be used in an online update
 1. Reference to the upgrade hook.
    All the upgrade hooks should be immutable: once they are written, they shouldn't change
 
@@ -96,7 +90,6 @@ It has the following functions:
 1. `check()`, where it loads `emqx_upgrade` module and verifies the following properties:
    1. List of the upgrade hooks is sorted by `num` and `introduced_in` fields
    1. The largest `introduced_in` field is lesser or equal to the EMQ X release version
-   1. `allow_online` field is `true` for all patch versions, so hot upgrades are possible
 
    This function can be called in CI to test the upgrade code
 1. `upgrade()` that performs data migration.
@@ -107,19 +100,37 @@ It has the following functions:
       If the hook ran successfully, update `last_upgrade_hook` counter.
       If `introduced_in` field of the _next_ update hook is larger than the current version, then insert the _current_ version to `emqx_metadata` table
 
-`upgrade()` function can be added to the appup file, so it handles hot upgrades too
+#### REST API
 
-#### Configuration migration
+Management API should be extended with two methods:
 
-Upgrade hooks can perform configuration migration.
-TBD: decide how it can work nicely with Hocon
+```bash
+$ curl -i --basic -u admin:public -X POST "http://localhost:8081/api/v4/data/backup"
+```
+and
 
-#### Runtime data migration
+```bash
+$ curl -i --basic -u admin:public -X POST "http://localhost:8081/api/v4/data/restore" -d @/tmp/my-node-name-2021-09-15-1402.BUP
+```
 
-Runtime data migration helps migrating the database tables, for example user-defined ACL chains, user accounts, etc.
-This is done using regular DB functions.
-During online upgrade this is done on the live mnesia cluster.
-During offline upgrade this is done in the isolated mnesia cluster.
+Restore method does both migration and backup, depending on the backup version.
+
+#### CLI
+
+```bash
+$ ./emqx_ctl data backup
+Created backup /tmp/my-node-name-2021-09-15-1402.BUP
+```
+
+```bash
+$ ./emqx_ctl data restore /tmp/my-node-name-2021-09-15-1402.BUP
+```
+
+#### Interaction of the EMQ X process with the helper process
+
+Add a simple `gen_server` to track the state of backup and restore.
+During migration of the old backup, it spawns the migration helper process asynchronously and tracks its state.
+This is needed to avoid REST API timeouts when the backup is large.
 
 ## Configuration Changes
 
@@ -139,3 +150,13 @@ Automatic upgrades can be tested in CI.
 TODO: Decide how to create a configuration backup for each EMQ X release to be used as an input for the test.
 
 ## Declined Alternatives
+
+### Configuration migration
+
+Configuration should be backward-compatible.
+A more modern solution is to delegate configuration management to the cluster orchestrator, such as terraform.
+
+### Online updates
+
+Integrating the same hook mechanism into hot upgrade looks like a low-hanging fruit.
+However, non-trivial hot upgrades that include schema migrations are non-trivial for other reasons, so this idea was abandoned.
