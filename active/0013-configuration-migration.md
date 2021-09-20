@@ -105,7 +105,7 @@ It has the following functions:
 Management API should be extended with two methods:
 
 ```bash
-$ curl -i --basic -u admin:public -X POST "http://localhost:8081/api/v4/data/backup"
+$ curl -i --basic -u admin:public -X POST "http://localhost:8081/api/v5/data/backup"
 ```
 and
 
