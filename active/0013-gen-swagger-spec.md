@@ -34,11 +34,11 @@ For each path, we define operations (HTTP methods) that can be used to access th
 ```erlang
 schema("/user/:user_id/:fingerprint") ->
    #{
-       operationId => user,
-       get => #{response => 
-                  #{200 => 
-                      hocon:mk(hoconsc:ref(?MODULE, "user"), 
-                               #{description => <<"return self user informations">>})}               
+     operationId => user,
+     get => #{response => 
+               #{200 => 
+                  hocon:mk(hoconsc:ref(?MODULE, "user"), 
+                    #{description => <<"return self user informations">>})}
     }.
 ```
 
@@ -68,34 +68,15 @@ parameters: [
     name: "oneof_test_in_query",
     schema: {
       oneOf: [
-        {example: 100,
-         type: "integer"},
-        {example: "string example",
-         type: "string"}]}},
-   {example: "true",
-    in: "query",
-    name: "is_admin",
+        {example: 100,type: "integer"},
+        {example: "string example",type: "string"}]}},
+   {example: "true",in: "query",name: "is_admin",required: true,
+    schema: {example: true,type: "boolean"}},
+   {example: "10", in: "query", name: "per_page", required: true,
+   schema: {example: 1, maximum: 50, minimum: 1, type: "integer"}},   
+   {description: "The client ID of your Emqx app", example: "an long client id", in: "path", name: "client_id",
     required: true,
-    schema: {
-      example: true,
-      type: "boolean"}},
-  {example: "10",
-   in: "query",
-   name: "per_page",
-   required: true,
-   schema: {
-     example: 1,
-     maximum: 50,
-     minimum: 1,
-     type: "integer"}},   
-   {description: "The client ID of your Emqx app",
-    example: "an long client id",
-    in: "path",
-    name: "client_id",
-    required: true,
-    schema: {
-      example: "string example",
-      type: "string"}}].
+    schema: {example: "string example",type: "string"}}].
 ```
 
 ### Request Body
