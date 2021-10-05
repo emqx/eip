@@ -49,8 +49,8 @@ One `emqx_authn` app to unify the management of all different backends (except f
 
 ### The same hook-point
 
-In this design, there is no intention to change the how EMQ X hooks work, the new app `emqx_authn` will
-continue to make use of the `client.authenticate` hook point,
+In this design, there is no intention to change how EMQ X hooks work,
+the new app `emqx_authn` will continue to make use of the `client.authenticate` hook-point,
 only to dispatch auth requests to the underlying backends inside one single hook call.
 
 ### Composable authn "chain"
@@ -64,6 +64,11 @@ results for one-request authentication:
 - `{ok, Info}` as a login accepted, hence to terminate the auth calls from here,
    where `Info` may contain additional information such as to indicate if the user is a super-user.
 - `{error, Reason}` to indicate that client's login should be denied.
+
+NOTE: for temporary errors, such as database connection issue, the error is logged,
+      and the auth result is `ignore` so to move forward to the next node in the chain.
+
+NOTE: if there is no `ok` (accepted) result after a full chain exhaustion, the login is rejected.
 
 For enhanced authentication, such as `scram` there can be messages after the first request,
 hence the backend may return `{continue, Data}`,
@@ -136,7 +141,7 @@ PUT /authentication/password-based:built-in-database
 }
 ```
 
-The `PUT` body should be construsted according to the config schema.
+The `PUT` body should be constructed according to the config schemak
 
 For per-listener authentication chains, the APIs are mostly the same,
 as the ones for global instances, only the path is prefixed with `listener/listener-name`.
@@ -150,7 +155,7 @@ PUT /listeners/:listener-name/authentication/:id
 PATCH /listeners/:listener-name/authentication/:id
 ```
 
-A listener name is of foramt `protocol:id` which is assigend in the config file, e.g.
+A listener name is of format `protocol:id` which is assigend in the config file, e.g.
 
 ```
 listeners.tcp.default {
