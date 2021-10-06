@@ -140,6 +140,8 @@ listener.tcp.default {
 ## APIs
 
 
+### Global auth chain APIs
+
 - Get global auth chain
 
 ```
@@ -166,6 +168,8 @@ PUT /authentication/password-based:built-in-database
 
 The `PUT` body should be constructed according to the config schemak
 
+### Per-listener auth chain APIs
+
 For per-listener authentication chains, the APIs are mostly the same,
 as the ones for global instances, only the path is prefixed with `listener/listener-name`.
 
@@ -187,6 +191,27 @@ listeners.tcp.default {
 ```
 
 The name of this listener is `tcp:default`
+
+### Re-positioning APIs
+
+```
+POST /:id/move
+```
+
+With a JSON body to indicate where the authenticator is to be re-positioned.
+The positions can be `top` (front of the list), `bottom` (the rear of the list),
+or `before` / `after` another ID.
+
+for example:
+```
+curl -X 'POST' \
+  'http://localhost:18083/api/v5/authentication/jwt/move' \
+  -H 'accept: */*' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "position": "before:password-based:built-in-database"
+}'
+```
 
 ## Testing suggestions
 
