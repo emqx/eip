@@ -100,6 +100,29 @@ authentication {
 }
 ```
 
+- Example 'chain' config
+
+```
+authentication = [
+  {
+    backend: 'built-in-database',
+    mechanism: "password-based",
+    ...
+    user_id_type: clientid
+  },
+  {
+    algorithm = "hmac-based"
+    mechanism = "jwt"
+    secret = "emqxsecret"
+    "secret_base64_encoded" = false
+    use_jwks = false
+    verify_claims {}
+  },
+]
+```
+
+```
+
 - Example config for built-in-database (mnesia) username/password based per-listener auth
 
 ```
