@@ -171,15 +171,15 @@ The `PUT` body should be constructed according to the config schemak
 ### Per-listener auth chain APIs
 
 For per-listener authentication chains, the APIs are mostly the same,
-as the ones for global instances, only the path is prefixed with `listener/listener-name`.
+as the ones for global instances, only the path is prefixed with `listener/listener_id`.
 
 ```
-POST /listeners/:listener-name/authentication
-GET /listeners/:listener-name/authentication
-GET /listeners/:listener-name/authentication/:id
-DELETE /listeners/:listener-name/authentication/:id
-PUT /listeners/:listener-name/authentication/:id
-PATCH /listeners/:listener-name/authentication/:id
+POST /listeners/:listener_id/authentication
+GET /listeners/:listener_id/authentication
+GET /listeners/:listener_id/authentication/:id
+DELETE /listeners/:listener_id/authentication/:id
+PUT /listeners/:listener_id/authentication/:id
+PATCH /listeners/:listener_id/authentication/:id
 ```
 
 A listener name is of format `protocol:id` which is assigend in the config file, e.g.
@@ -212,6 +212,19 @@ curl -X 'POST' \
   "position": "before:password-based:built-in-database"
 }'
 ```
+
+### User management APIs
+
+We should also support CRUD APIs for user management, with below endpoints.
+
+```
+/:id/users
+/listeners/:listener_id/authentication/:id/users
+```
+
+The authenticator ID is made generic although 5.0,
+only the built-in database (Mnesia) is supported.
+That is, only `password-based:built-in-database` is valid for `:id` so far.
 
 ## Testing suggestions
 
