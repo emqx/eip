@@ -29,7 +29,7 @@ Some configs may not make sense to be the same for all nodes, so we should also 
 
 #### emqx.conf
 
-EMQ X reads `emqx.conf` for converting this hocon file into Erlang format at startup, and `emqx.conf` has only 2 lines by default.
+EMQ X reads `emqx.conf` for converting this hocon file into Erlang format at startup, and `emqx.conf` explicitly include `override.conf` at the end of the file.
 
 ```erlang
 include "data/configs/emqx_cluster_override.conf"
@@ -38,7 +38,7 @@ include "data/configs/emqx_local_override.conf"
 
 - If the user wants to manually modify a node's configuration item before startup, it can be appended to the end of the `emqx.conf`, or use `include "data/configs/user_default.conf`, and for the same configuration, the later value will overwrite the earlier one.
 - If the user specifies to read environment variables for a configuration item, this value is read-only at runtime and will not be modified. In other words, the environment variables are always taken at the end of the `emqx.conf` file and has the highest priority.
-- Unlike the previous declaration of all configuration items displayed in `emqx.conf`, if an item uses a default value, it does not need to be shown in `emqx.conf`.  the default is only embedded in the code. Also, users can view all configuration items via the HTTP API (described later). This would have 2 benefits: 
+- For now, we need to integrate all the configurations into `emqx.conf`. But it is planned that `emqx.conf` will no longer contain configurations that use default values in the next phase(propose another EIP), the default is only embedded in the code. Also, users can view all configuration items via the HTTP API (described later). This would have 2 benefits: 
   - In subsequent version upgrades, adding/removing/updating configurations will not be overwritten by `emqx.conf`. 
   - This allows the user to focus only on the configuration that has been modified. 
 
