@@ -2,7 +2,7 @@
 
 ## Changelog
 
-* 2020-10-21: @zhongwencool init draft
+* 2021-10-12: @zhongwencool init draft
 
 ## Abstract
 
@@ -14,11 +14,14 @@ Prior to 5.0, EMQ X's configuration management are quite static.
 * To load changed configs, it usually requires restarting an application, or reloading a plugin, or sometimes even restarting the node.
 * When managing a cluster, one would have to update config files one node after another. 
 * Mnesia was used to store some of the configs (such as rule-engine resources) in order to get them replicated, which made it less configurable because it was not possible to bootstrap such configs from a file which can be prepared before the node boots. Instead, one would have to wait for the node to boot, and then call HTTP API to make the changes.
-Try to find a suitable way to:
 
-- Hot update configurations via HTTP API.
-- Maintain consistency of the configuration across the cluster, for example `authorization.source`, rules engine's rules.
-- Different nodes of the cluster may set different values for the same configuration item, such as: use different `rate_limit` settings for machines with different hardware limitations.
+In this proposal, we try to address the pain-points by
+- Supporting HTTP APIs to perform live config changes and reload.
+- Persisting changes made from HTTP APIs on disk in HOCON format. 
+- Maintaining consistency across the nodes in the cluster. For example authentication & authorisation (ACL) configs, and rule-engine rules.
+
+In 5.0, no config is stored in Mnesia, however such changes are not in the scope of this EIP.
+Some configs may not make sense to be the same for all nodes, so we should also allow local node overrides. such as `rate_limit` settings for nodes per their hardware capacity.
 
 ## Design
 
@@ -26,14 +29,14 @@ Try to find a suitable way to:
 
 #### emqx.conf
 
-Emqx reads `emqx.conf` forconverting this hocon file into Erlang format at startup, and `emqx.conf` has only 2 lines by default.
+EMQ X reads `emqx.conf` for converting this hocon file into Erlang format at startup, and `emqx.conf` has only 2 lines by default.
 
 ```erlang
-include "./data/emqx_cluster_override.conf"
-include "./data/emqx_local_override.conf"
+include "data/configs/emqx_cluster_override.conf"
+include "data/configs/emqx_local_override.conf"
 ```
 
-- If the user wants to manually modify a node's configuration item before startup, it can be appended to the end of the `emqx.conf`, or use `include "./data/user_default.conf`, and for the same configuration, the later value will overwrite the earlier one.
+- If the user wants to manually modify a node's configuration item before startup, it can be appended to the end of the `emqx.conf`, or use `include "data/configs/user_default.conf`, and for the same configuration, the later value will overwrite the earlier one.
 - If the user specifies to read environment variables for a configuration item, this value is read-only at runtime and will not be modified. In other words, the environment variables are always taken at the end of the `emqx.conf` file and has the highest priority.
 - Unlike the previous declaration of all configuration items displayed in `emqx.conf`, if an item uses a default value, it does not need to be shown in `emqx.conf`.  the default is only embedded in the code. Also, users can view all configuration items via the HTTP API (described later). This would have 2 benefits: 
   - In subsequent version upgrades, adding/removing/updating configurations will not be overwritten by `emqx.conf`. 
@@ -44,7 +47,7 @@ include "./data/emqx_local_override.conf"
 - This file can only be modified via the API and manual modification of file directly is not supported.
 
 - When updating configurations that must require consistency across the cluster, they are persisted to this file.
-- The node will copy this file from the longest surviving core node before initializing the configuration, , this file will be added to initialize the configuration together.
+- The node will copy this file from the longest surviving core node before initializing the configuration, this file will be added to initialize the configuration together.
 - When the node is updated, the configuration within the cluster is updated via cluster call and persisted to this file.
 - This file must be kept the same for all nodes, we will add an extra process to check the content of the file periodically, and alarm after 3 continuous differences are found.
 
@@ -58,10 +61,10 @@ include "./data/emqx_local_override.conf"
 Before, the initialization of the configuration file, cluster_call, was done through the `emqx_machine`, we will split this part of the functionality from the` emqx_machine` and make a new application `emqx_conf`
 
 The role of this application is to
-- Converting the configuration from hocon format to erlang sys.config format at initialization.
-- Manage hot updates and deletions of configurations within the cluster.
+- Convert the configuration from HOCON format to Erlang sys.config format at initialization.
+- Manage live-updates and deletions of the configurations, and replicate across the cluster.
 
-The basic node configuration hot update remains in emqx, in other words: `emqx_config_handler`, remains unchanged, but other apps that want to update the configuration must call through the `emqx_conf`'s' API, which cannot call emqx API directly.
+Other apps that want to update the configuration must call through the `emqx_conf`'s' API, which cannot call emqx API directly.
 The specific flow is: 
 
 ```bash
@@ -75,13 +78,13 @@ Other Apps(eg: emqx_resource) => emqx_conf => emqx API.
 ```erlang
 #{
   get => #{
-    description => <<"Get all the configurations of cluster, including hot and non-hot updatable items.">>,
+    description => <<"Get all the configurations of a given node, or all nodes in the cluster.">>,
     parameters => [
        {node, hoconsc:mk(typerefl:atom(),
           #{in => query, required => false, example => <<"emqx@127.0.0.1">>,
-          desc => <<"Node's name: If you have this field defaulted, the whole cluster is return.">>})},
+          desc => <<"Node name. When this parameter is not provided, configs for all nodes in the cluster are returned">>})},
        {debug, hoconsc:mk(typerefl:boolean(), #{in => query, required => false,
-          desc => <<"Carries debug(meta data) information, such as:line number,default value,documentation">>})}],
+          desc => <<"Carries debug (metadata) information, such as file name and line number">>})}],
             responses => #{
                 200 => #{"$node" => configs_list()}
             }
@@ -121,10 +124,11 @@ schema("/configs/:rootname") ->
 ```
 
 - get specific configuation, such as: `/configs/emqx_dashboard` will return :
+  There should be a `sensitive` flag in the schema for sensitive fields, and the value should be reported back as `"******"` in the API, such as password.
 
   ```erlang
   #{'emqx@127.0.0.1' => 
-     #{default_password => "public",
+     #{default_password => "****",
        default_username => "admin",
        listeners =>
          [#{backlog => 512,inet6 => false,ipv6_v6only => false,
@@ -135,7 +139,7 @@ schema("/configs/:rootname") ->
   }   
   ```
 
-- Update specific configuation without query string, will modify the configuration of all nodes in the cluster and persist it in `emqx_cluster_override.conf`. In other words, it is the configuration that keeps the cluster strongly consistent.
+- Update specific configuation without the 'node' query string will modify the configuration of all nodes in the cluster and persist it in `emqx_cluster_override.conf`.
 
 - Update specific configuation with `node='xxx@xx.xx.xx'` in the query string, only the configuration of the specified node will be modified, persisted to `emqx_local_override.conf`.
 
