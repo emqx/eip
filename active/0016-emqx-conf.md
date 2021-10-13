@@ -6,7 +6,7 @@
 
 ## Abstract
 
-Introduces how to  initialize/hot update/reset configurations.
+This proposal introduces a new Erlang application to handle EMQ X's configuration management with a focus on config live-reloads, and cluster wide config change syncs.
 
 ## Motivation
 
