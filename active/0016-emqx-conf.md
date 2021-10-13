@@ -13,7 +13,7 @@ Introduces how to  initialize/hot update/reset configurations.
 Try to find a suitable way to:
 
 - Hot update configurations via HTTP API.
-- Maintain data consistency for the same configuration, keeping the same configuration in the cluster must be the same, such as `authorization.source`, rules engine's rules.
+- Maintain consistency of the configuration across the cluster, for example `authorization.source`, rules engine's rules.
 - Different nodes of the cluster may set different values for the same configuration item, such as: use different `rate_limit` settings for machines with different hardware limitations.
 
 ## Design
