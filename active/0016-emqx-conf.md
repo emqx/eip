@@ -9,7 +9,11 @@
 This proposal introduces a new Erlang application to handle EMQ X's configuration management with a focus on config live-reloads, and cluster wide config change syncs.
 
 ## Motivation
-
+Prior to 5.0, EMQ X's configuration management are quite static.
+* The user interfaces for config changes are environment variables or a text editor for the config files.
+* To load changed configs, it usually requires restarting an application, or reloading a plugin, or sometimes even restarting the node.
+* When managing a cluster, one would have to update config files one node after another. 
+* Mnesia was used to store some of the configs (such as rule-engine resources) in order to get them replicated, which made it less configurable because it was not possible to bootstrap such configs from a file which can be prepared before the node boots. Instead, one would have to wait for the node to boot, and then call HTTP API to make the changes.
 Try to find a suitable way to:
 
 - Hot update configurations via HTTP API.
