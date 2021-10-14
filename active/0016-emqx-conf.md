@@ -32,8 +32,8 @@ Some configs may not make sense to be the same for all nodes, so we should also 
 EMQ X reads `emqx.conf` for converting this hocon file into Erlang format at startup, and `emqx.conf` explicitly include `override.conf` at the end of the file.
 
 ```erlang
-include "data/configs/emqx_cluster_override.conf"
-include "data/configs/emqx_local_override.conf"
+include "data/configs/cluster-override.conf"
+include "data/configs/local-override.conf"
 ```
 
 - If the user wants to manually modify a node's configuration item before startup, it can be appended to the end of the `emqx.conf`, or use `include "data/configs/user_default.conf`, and for the same configuration, the later value will overwrite the earlier one.
