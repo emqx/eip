@@ -63,7 +63,7 @@ The start options are different with what we have, for example, we'll use `bin/e
 The generated start file is powerful, but we're not able to use it directly.
 1. We need to include some environment variables to forward compatible current system.
 2. We need to call `nodetool` for our own usages.
-3. We need to generate `app.config` and `vm.config` everytime we start the server.
+3. We need to generate `app.config` and `vm.config` by `hocon` everytime we start the server.
 
 So we need to modify the template to override the default one and add these features above.
 The new start file is located at `rel/overrides/bin/emqx`.
@@ -86,11 +86,13 @@ command="$1"; shift
 We'll have the same issue when release by `mix`, and we'll handle it with a different way.
 With `mix`, we can move all the features we have into a new application, we can call it `emqx_release_helper` and put it into `apps/` folder.
 
-The Release Helper handles
-1. run scripts under `scripts`
-2. extra step and system env in `Makefile`
-3. different release type(cloud/edge) and package type(bin/pkg)
-4. generate overlay files by templates
+The Release Helper will handle
+
+1. difference between operator systems
+2. run scripts under `scripts` folder
+3. extra step and system env in `Makefile`
+4. different release type(cloud/edge) and package type(bin/pkg)
+5. generate overlay files by templates
 
 We don't need to include this application into the release package since it's only for release step, and it's an internal feature for `mix`.
 
@@ -100,7 +102,7 @@ GRPC is a special case for the compile flow.
 We're using a rebar plugin to compile `.proto` files to `_pb.erl` files when run `rebar3 compile`, but we don't have `rebar3` when run `mix compile`.
 So we need to call `:gpb_compile.file/2` directly before compile the application depends on GRPC.
 
-TODO: template for grpc hbvrs and clients.
+**TODO**: template for grpc hbvrs and clients.
 
 ## EUnit
 **TODO**
