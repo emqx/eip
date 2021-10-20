@@ -121,8 +121,6 @@ authentication = [
 ]
 ```
 
-```
-
 - Example config for built-in-database (mnesia) username/password based per-listener auth
 
 ```
