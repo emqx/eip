@@ -192,6 +192,57 @@ listeners.tcp.default {
 
 The name of this listener is `tcp:default`
 
+### Listing format
+
+For listing methods, i.e.
+
+```
+GET /authentication
+GET /listeners/:listener_id/authentication
+```
+
+we have the following response format:
+
+```javascript
+[
+  {
+    "id": authenticatorId,
+    "config": authenticatorConfig
+  },
+  ...
+]
+```
+
+For example:
+
+```javascript
+[
+  {
+    "id": "password-based:built-in-database",
+    "config":
+      {
+        "backend": "built-in-database",
+        "mechanism": "password-based",
+        ...
+        "user_id_type": "clientid"
+      },
+  },
+  {
+    "id": "jwt",
+    "config":
+      {
+        "algorithm": "hmac-based",
+        "mechanism": "jwt",
+        "secret": "emqxsecret",
+        "secret_base64_encoded": false
+        "use_jwks": false,
+        "verify_claims": {}
+      }
+  }
+]
+```
+
+
 ### Re-positioning APIs
 
 ```
