@@ -2,8 +2,8 @@
 
 ## Change log
 
-*             @tigercl Initial draft
-* 2021-10-04: @zmstone Moved the doc from internal share
+* 2021-05-17: @zhouzb Initial draft
+* 2021-10-04: @zmstone Sync the doc from internal updated 0012 from doc
 
 ## Abstract
 
