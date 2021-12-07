@@ -63,28 +63,29 @@ Config proposal
 
 ```
 authorization {
-  no_match: allow | deny
-  deny_action: disconnect | ignore
+  no_match = allow | deny
+  deny_action = disconnect | ignore
 
   cache {
-    enable: true
-    max_size: 32
-    ttl: 30m
+    enable = true
+    max_size = 32
+    ttl = 30m
   }
   sources: [
     {
-      type: file
-      enable: true
-      path: "etc/example.conf"
+      type = file
+      enable = true
+      path = "etc/example.conf"
     },
     {
-      type: mysql
-      enable: true
-      database: mqtt
-      user: root
-      password: xxx
-      pool_size: 8
-      sql: "select * from table1 where clientid = xxx"}
+      type = mysql
+      enable = true
+      database = mqtt
+      username = root
+      password = xxx
+      pool_size = 8
+      query = "select * from table1 where clientid = xxx"
+    }
   ]
 }
 ```
@@ -93,7 +94,11 @@ authorization {
 
 #### config
 ```
-{type: file, enable: true, path: /path/to/example.conf}
+{
+  type = file
+  enable = true
+  path = "/path/to/example.conf"
+}
 ```
 
 ### File content example (same as in 4.x)
@@ -106,42 +111,42 @@ authorization {
 ### MySQL
 ```
 {
-  type: mysql
-  enable: true
-  server: "127.0.0.1:3306"
-  database: mqtt
-  pool_size: 1
-  username: root
-  password: public
-  auto_reconnect: true
-  ssl:{
-    enable: true
-    cacertfile: xxx.ca
-    certfile: xxx.cert
-    keyfile: xxx.key
+  type = mysql
+  enable = true
+  server = "127.0.0.1:3306"
+  database = mqtt
+  pool_size = 1
+  username = root
+  password = public
+  auto_reconnect = true
+  ssl = {
+    enable = true
+    cacertfile = xxx.ca
+    certfile = xxx.cert
+    keyfile = xxx.key
   }
-  sql: "select ipaddress, username, clientid, action, permission, topic from mqtt_authz where ipaddr = '%a' or username = '%u' or clientid = '%c'"
+  query: "select ipaddress, username, clientid, action, permission, topic from mqtt_authz where ipaddr = '${peerhost}' or   username = '${username}' or clientid = '${clientid}'"
 }
 ```
 
 ### PostgresSQL
 ```
 {
-  type: pgsql
-  enable: true
-  server: "127.0.0.1:5432"
-  database: mqtt
-  pool_size: 1
-  username: root
-  password: public
-  auto_reconnect: true
-  ssl:{
-    enable: true
-    cacertfile: xxx.ca
-    certfile: xxx.cert
-    keyfile: xxx.key
+  type = postgresql
+  enable = true
+  server = "127.0.0.1:5432"
+  database = mqtt
+  pool_size = 1
+  username = root
+  password = public
+  auto_reconnect = true
+  ssl = {
+    enable = true
+    cacertfile = xxx.ca
+    certfile = xxx.cert
+    keyfile = xxx.key
   }
-  sql: "select ipaddress, username, clientid, action, permission, topic from mqtt_authz where ipaddr = '%a' or username = '%u' or clientid = '%c'"
+  query: "select ipaddress, username, clientid, action, permission, topic from mqtt_authz where ipaddr = '${peerhost}' or username = '${username}' or clientid = '${clientid}'"
 
 }
 ```
@@ -149,30 +154,31 @@ authorization {
 ### Redis
 ```
 {
-  type: redis
-  enable: true
-  server: "127.0.0.1:6379"
-  database: 0
-  pool_size: 1
-  password: public
-  auto_reconnect: true
-  ssl: {enable: false}
-  cmd: "HGETALL mqtt_authz:%u"
+  type = redis
+  enable = true
+  redis_type = single
+  server = "127.0.0.1:6379"
+  database = 0
+  pool_size = 1
+  password = public
+  auto_reconnect = true
+  ssl = {enable = false}
+  cmd = "HGETALL mqtt_authz:${username}"
 }
 ```
 
 ### MongoDB
 ```
 {
-  type: mongodb
-  enable: true
-  mongo_type: single
-  server: "127.0.0.1:27017"
-  pool_size: 1
-  database: mqtt
-  ssl: {enable: false}
-  collection: mqtt_authz
-  find: { "$or": [ { "username": "%u" }, { "clientid": "%c" } ] }
+  type = mongodb
+  enable = true
+  mongo_type = single
+  server = "127.0.0.1:27017"
+  pool_size = 1
+  database = mqtt
+  ssl = {enable = false}
+  collection = mqtt_authz
+  selector: { "$or": [ { "username": "${username}" }, { "clientid": "${clientid}" } ] }
 }
 ```
 
@@ -184,12 +190,12 @@ authorization {
 GET /authorization/settings
 RESP:
 {
-  no_match: allow | deny
-  deny_action: disconnect | ignore
-  cache {
-    enable: true
-    max_size: 32
-    ttl: 30m
+  "no_match": "allow" | "deny",
+  "deny_action": "disconnect" | "ignore",
+  "cache" {
+    "enable": true,
+    "max_size": 32,
+    "ttl": "30m"
   }
 }
 ```
@@ -197,14 +203,14 @@ RESP:
 #### Update root level settings
 ```
 PUT /authorization/settings
-params:
+BODY:
 {
-  no_match: allow | deny
-  deny_action: disconnect | ignore
-  cache {
-    enable: true
-    max_size: 32
-    ttl: 30m
+  "no_match": "allow" | "deny",
+  "deny_action": "disconnect" | "ignore",
+  "cache": {
+    "enable": true,
+    "max_size": 32,
+    "ttl": "30m"
   }
 }
 ```
@@ -212,20 +218,23 @@ params:
 #### Create ACL data sources
 ```
 POST /authorization/sources
-{ type: 'xxx', ... }
+BODY:
+{ "type": xxx, ... }
 ```
 
 #### Get ACL data sources
 ```
 GET /authorization/sources
-[{ type: xxx }, { type: xxx }]
+RESP:
+[{ "type": xxx }, { "type": xxx }]
 ```
 
 #### Get detailed source config per type
 
 ```
-GET /authorization/sources/{type} # mysql,redis,mongodb,pgsql,http....
-{}
+GET /authorization/sources/{type} # mysql,redis,mongodb,postgresql,http....
+RESP:
+{"type": "mysql", ...}
 ```
 
 #### Update (reload) source config per type
@@ -233,20 +242,21 @@ GET /authorization/sources/{type} # mysql,redis,mongodb,pgsql,http....
 When needed, the underlying resource such as MySQL connection pool should be restarted when handing such update requests.
 
 ```
-PUT /authorization/sources/{type}
-{}
+PUT /authorization/sources/{type} # mysql,redis,mongodb,postgresql,http....
+BODY:
+{"type": "mysql", ...}
 ```
 
 #### Delete a source cofnig per type
 
 ```
-DELETE /authorization/sources/{type}
+DELETE /authorization/sources/{type} # mysql,redis,mongodb,postgresql,http....
 ```
 
 #### Adjust source's position in the chain
 
 ```
-POST /authorization/sources/{type}/move
+POST /authorization/sources/{type}/move # mysql,redis,mongodb,postgresql,http....
 { "position": "top" | "bottom" | "after:{type}" | "before:{type}" }
 ```
 
@@ -254,8 +264,12 @@ POST /authorization/sources/{type}/move
 
 ```
 GET /authorization/sources/file
-{ type: 'file', rules: 'string', path: '....' }
-PUT /authorization/sources/file
-{ type: 'file', rules: 'string', path: '....' }
+RESP:
+{ "type": "file", "rules": "...", "path": "..." }
+```
 
+```
+PUT /authorization/sources/file
+BODY:
+{ "type": "file", "rules": "...", "path": "..." }
 ```
