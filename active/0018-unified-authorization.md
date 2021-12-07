@@ -54,7 +54,7 @@ This proposal introduces a new design for EMQ X 5.0 authorization (ACL), which a
 
 * ACL for gateways, CoAP, MQTT-SN, exproto, Stomp (but not LwM2M)
 
-* Management API to uploade rules for 'file' type ACL source
+* Management API to upload rules for 'file' type ACL source
 
 
 ## Design
@@ -142,7 +142,7 @@ authorization {
     keyfile: xxx.key
   }
   sql: "select ipaddress, username, clientid, action, permission, topic from mqtt_authz where ipaddr = '%a' or username = '%u' or clientid = '%c'"
-  
+
 }
 ```
 
@@ -243,11 +243,11 @@ PUT /authorization/sources/{type}
 DELETE /authorization/sources/{type}
 ```
 
-#### Adjust source's posision in the chain
+#### Adjust source's position in the chain
 
 ```
 POST /authorization/sources/{type}/move
-{ "position": "top" | "buttom" | after:{type} | before:{type} }
+{ "position": "top" | "bottom" | "after:{type}" | "before:{type}" }
 ```
 
 #### APIs to manage 'file' type source
