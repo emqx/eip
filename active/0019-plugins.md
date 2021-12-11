@@ -40,26 +40,28 @@ Worth mentioning, since 4.3.2, EMQ X for the first supported drop-in installatio
 ### High level requirements
 
 1. Hook points should be compatible with 4.x
-2. More clear ordering of all hook callbacks under one certain hook point, for example, internal hooks use priority 1000, and force external plugins to provide a priority number. If they wish to have it ordered before internal plugins they can choose to use a number smaller than 1000.
-3. All built-in features such as authentication and authorisation are not presented as plugins except for
-    1. LDAP auth
+1. More clear ordering of all hook callbacks under one certain hook point, for example, internal hooks use priority 1000, and force external plugins to provide a priority number. If they wish to have it ordered before internal plugins they can choose to use a number smaller than 1000.
+1. All built-in features such as authentication and authorisation are not presented as plugins except for
+    1. LDAP authentication
+    1. PSK authentication
 
 ### Basic steps to install an external plugin
 
 - Download compiled zip package
 - Upload to a specific dir
-- Execute a command to validate & install & enable the plugin
+- Execute a command to validate & install & enable & uninstall the plugin
 
 ### Manage plugins from Dashboard UI
 
 - Manage installation from Dashboard GUI
-    - upload
+    - upload (and extract, but not persist it)
     - install
     - uninstall
 - Manage a list of installed plugins, supported actions:
     - List view
-    - Show running status: running | stopped
-    - support actions: start | stop
+    - Show running status: "running" or "stopped".
+      Status should be presented per-node. e.g. `"status": "running"` for the current node (serving the API), or `"node_status": [{"node": "node1", "status": "running"}i, ...]` for a summary view of all nodes in the cluster.
+    - support actions: "start" or "stop"
 
 ## Plugin metadata
 
@@ -67,7 +69,6 @@ The plugin package should include metadata (in JSON format) to help identify, va
 
 - Name (same as the Erlang application name, it has to be globally unique)
 - Version
-- License (checked against a white list: apache2, mit, ...)
 - Author
     - Name
     - Contact
@@ -78,8 +79,9 @@ The plugin package should include metadata (in JSON format) to help identify, va
     - data_persistence
     - rule_engine_extension
 - Compatibility
-    - Compiled with EMQ X version (from 5.0)
-    - Supported OTP releases (has to be the same as EMQ's supported OTP versions)
+    - Compatible with EMQ X version(s), implicit low boundary of supported versions range is `5.0.0`, also to support version compares: `~>`, `>=`, `>`, `<=`, `<`, `==`
+      ref: https://github.com/erlang/rebar3/blob/c102379385013896711bba3969f280f851c67cc7/src/rebar_packages.erl#L376-L392
+    - Supported OTP releases (has to be the same as EMQ X's supported OTP versions)
 
 ## User Interface
 
@@ -87,7 +89,7 @@ The plugin package should include metadata (in JSON format) to help identify, va
 
 - List plugins
 
-```json
+```
 /plugins
 [{"metadata":
     { "name": "emqx_foobar",
@@ -95,32 +97,55 @@ The plugin package should include metadata (in JSON format) to help identify, va
       "version": "0.1.0",
       ...
     },
-  "status": "running" // not_initialized | running | stopped
+  "status": "running" // disabled | running | stopped
+  "node_status": [...]
 },..]
 ```
 
-The `not_initialized` state is recognised when the plugin is installed (unziped), but not configured to be loaded.
+The `disabled` state is recognised when the plugin is installed (unziped), but not configured to be loaded.
+
+- Get one plugin
+
+```
+GET /plugins/{name}
+{"metadata":
+    { "name": "emqx_foobar",
+      "description": "EMQ X plugin to implement foobar feature",
+      "version": "0.1.0",
+      ...
+    }
+ "status": "running"
+ "node_status": [...]
+}
+```
 
 - Upload a package
 
 This API uploads and extracts a package
 
-```json
+```
 POST /plugins/upload
 request: binary data
 response: OK | error
 ```
 
-- Start or stop a plugin
+- Enable / Start / Stop a plugin
 
-```json
+```
 PUT /plugins/{name}
+{
+    "status": running | stopped | disabled
+}
+
 PUT /nodes/{node}/plugins/{name}
+{
+    "status": running | stopped | disabled
+}
 ```
 
 - Delete a plugin
 
-```json
+```
 DELETE /plugins/{name}
 DELETE /nodes/{node}/plugins/{name}
 ```
