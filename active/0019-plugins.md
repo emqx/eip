@@ -45,6 +45,25 @@ Worth mentioning, since 4.3.2, EMQ X for the first supported drop-in installatio
     1. LDAP authentication
     1. PSK authentication
 
+### Plugin types
+
+There are two different kinds of plugsins, 'prebuilt' and 'externa'.
+Pre-built plugins are released as a part of the EMQ X (CE or EE) official release package.
+External plugins are developed and release independently.
+
+### External plugin security concerns
+
+An external plugins is loaded and executed as any other EMQ X component without any
+access restriction, or scope confinement.
+
+EMQ X team's long term plan is to introduce a code review & build platform
+(like an app market place) so EMQ X CE users and EE customers can have a trusted
+source to download the packages.
+
+Before the review & build process is in place,
+EMQ X's users and customers are only adviced to take
+extra care when loading a plugin developed by thirdy party.
+
 ### Basic steps to install an external plugin
 
 - Download compiled zip package
