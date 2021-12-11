@@ -181,6 +181,11 @@ GET /plugins/{name}
 
 This API uploads and extracts a package
 
+NOTE: since this API is a potential security threat, it is disabled by default.
+To enable it, one have change the configuration to enable.
+Such config change is not possible to be done via http API, only by changing
+the conifg file, or from `emqx_ctl` command line.
+
 ```
 POST /plugins/upload
 request: binary data
