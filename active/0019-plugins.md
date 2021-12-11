@@ -47,7 +47,7 @@ Worth mentioning, since 4.3.2, EMQ X for the first supported drop-in installatio
 
 ### Plugin types
 
-There are two different kinds of plugsins, 'prebuilt' and 'externa'.
+There are two different kinds of plugsins, 'prebuilt' and 'external'.
 Pre-built plugins are released as a part of the EMQ X (CE or EE) official release package.
 External plugins are developed and release independently.
 
@@ -82,15 +82,52 @@ extra care when loading a plugin developed by thirdy party.
       Status should be presented per-node. e.g. `"status": "running"` for the current node (serving the API), or `"node_status": [{"node": "node1", "status": "running"}i, ...]` for a summary view of all nodes in the cluster.
     - support actions: "start" or "stop"
 
-## Plugin metadata
+## Plugin package
 
-The plugin package should include metadata (in JSON format) to help identify, validate, or describe the package.
+A plugin package is a zip file made of two files inside:
+
+* A tar file for the compiled beams (and maybe source code too),
+* A metadata file in JSON format
+
+### Plugin tar
+
+The tar should be of layout
+
+```
+├── emqx_extplug1
+│   ├── LICENSE
+│   ├── Makefile
+│   ├── README.md
+│   ├── ebin
+│   │   ├── emqx_extplug1.app
+│   │   └── emqx_extplug1.beam
+│   ├── etc
+│   │   └── emqx_extplug1.conf
+│   ├── priv
+│   │   └── .. # maybe
+│   ├── rebar.config
+│   └── src
+│       └── ... # maybe
+├── extplug1_dep1
+│   ├── LICENSE
+...
+```
+
+### Plugin metadata
+
+Inside the plugin zip-package, there should be a JSON file to help describe, identify and validate the package.
 
 - Name (same as the Erlang application name, it has to be globally unique)
 - Version
-- Author
+- Build-datetime
+- sha256-checksum-for-tar
+- Authors
+    - Free text Name & Contact information such as email or website
+- Builder
     - Name
     - Contact
+    - Optional: Builder's website (to find e.g. public key)
+    - Optional: Builder's signning signature for the package
 - URL to source code
 - What functionalities (one or more of below)
     - authentication
@@ -101,6 +138,8 @@ The plugin package should include metadata (in JSON format) to help identify, va
     - Compatible with EMQ X version(s), implicit low boundary of supported versions range is `5.0.0`, also to support version compares: `~>`, `>=`, `>`, `<=`, `<`, `==`
       ref: https://github.com/erlang/rebar3/blob/c102379385013896711bba3969f280f851c67cc7/src/rebar_packages.erl#L376-L392
     - Supported OTP releases (has to be the same as EMQ X's supported OTP versions)
+
+We will perhaps need a rebar3 plugin for to help generate the metadata file.
 
 ## User Interface
 
