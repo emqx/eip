@@ -92,7 +92,7 @@ an interface to monitor JQ programs and terminate specific ones.
 ### Suggested JQ Syntax in Rule SQL
 
 We'd better use JQ along with the rule SQL, as it is common to use the output of
-a SQL function as the input of JQ, or to assign the output of JQ to an SQL
+an SQL function as the input of JQ, or to assign the output of JQ to an SQL
 variable and then SELECT it as part of the SQL result.
 
 One way is use JQ as a normal SQL function, e.g.:
