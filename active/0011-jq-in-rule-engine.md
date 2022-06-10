@@ -107,7 +107,7 @@ The above suggestion has been added to the rule engine in the 5.0 release of
 EMQX. The second argument in the implementation can be a non-string value as in
 the example above. The second argument can also be a JSON value encoded as a
 string, in which case the function will automatically transform the argument to
-the encoded value before it sent to the JQ program. An implicit timeout which
+the encoded value before it is sent to the JQ program. An implicit timeout which
 can be configured with the `rule_engine.jq_function_default_timeout` setting is
 used to timeout the JQ function after a certain amount of time. A JQ function
 that takes three arguments has also been added in the 5.0 release. The third
@@ -168,16 +168,11 @@ JQ
 This example does exactly what the previous example do. The SELECT clause can
 only output a single map result, and the map will then be piped to the JQ clause.
 
-I am happy with this syntax now.
-
-### Update 2022-06-09:
-
-Another suggestion has recently been discussed. This option is to support
-multiple languages for writing rule engine programs. One of those languages
-could be JQ and one could be the current SQL based language. With this
-suggestion the user would need to select which language to use. This could be
-done with a dropbox in the GUI interface for adding rules. Here are some
-advantages with this suggestion:
+Another option is to support multiple languages for writing rule engine
+programs. One of those languages could be JQ and one could be the current SQL
+based language. With this suggestion the user would need to select which
+language to use. This could be done with a dropbox in the GUI interface for
+adding rules. Here are some advantages with this suggestion:
 
 * It is future proof as it would be easy to add a third language in the future
 * The syntax of each individual language would be less cluttered as one would
@@ -200,18 +195,22 @@ FreeBSD, Solaris, and Windows for now, so the simplest way is to package the `jq
 binary along with all of the emqx installation packages, and talk to `jq` using
 the [erlang port](http://erlang.org/doc/tutorial/c_port.html). For someone who
 is building emqx from source code of emqx repo, he can put the jq binary in to
-the right path according to the configuration.
+the right path according to the configuration. The current Erlang JQ library
+(see Section "JQ NIF/Port Library") uses a long running port program that uses 
+an LRU cache to cache compiled programs for increased efficiency. 
 
 The second approach is NIF, with the drawback of more changes to the code (compile
 the code to a dynamic C library rather than a single binary), and safety (it
 brings down the entire erlang system on crash, and may hold up the erlang
 scheduler if it returns too late). But this way has the benefit of efficiency
-and no independent `jq` binary is required.
+and no independent `jq` binary is required. The NIF approach has also been
+implemented in the Erlang JQ library but it currently (2022-07-10) lacks support
+for timeouts (which is tricky to implement as it will requires non-trivial
+modification to the main jq library).
 
-### Update 2022-06-09:
-
-There have recently been discussions about compiling JQ programs to BEAM
-bytecode. Here are some of the benefits one might get from doing that:
+The third approach is to compile JQ programs directly to BEAM bytecode. Here
+are some of the benefits one might get from doing this compared to the other
+approaches:
 
 * Speed - No context switching (between BEAM code and port or dirty NIF thread),
   and running JITed BEAM code will probably be faster than running interpreted
@@ -236,31 +235,29 @@ code to JQ bytecode and then one only have to implement a transformation of JQ
 bytecode to BEAM bytecode. This is probably easier than transforming JQ code
 to BEAM bytecode without an intermediate step.
 
-### A try for using JQ as NIF
+### JQ NIF/Port Library
 
-An Erlang NIF library has been create at https://github.com/terry-xiaoyu/jqerl.
 
-It is now at the very early stage and is not well-tested.
-It requires the `jqlib`, so before using the library you should install the
-`jq` (version 1.6) on your system, and make sure the `libjq.a` can be found
-in `/usr/local/lib`.
-
-The NIF now can only parse JSON strings, the argument `--raw-input` maybe supported
-in the later version.
-
-Here's a quick look of the NIF:
+An Erlang JQ library has been created at "https://github.com/emqx/jq". The
+library interface supports both a NIF based backend and port based backed. The
+user can configure which backend to use. At the time of writing (2022-07-10),
+the JQ function in the rule engine can only use the port based backend as this
+backend is currently the only one that supports timeouts. There is a plan to
+also support timeouts in the NIF based backend. When that is possible, EMQX
+users should be given the option to configure which backend to use. Here are
+some examples that shows how the library can be used:
 
 ```
 rebar3 shell
 ...
 
-1> jqerl:parse(<<".a">>, <<"{\"b\": 1}">>).
+1> jqerl:process_json(<<".a">>, <<"{\"b\": 1}">>).
 {ok,[<<"null">>]}
 
-2> jqerl:parse(<<".a">>, <<"{\"a\": {\"b\": {\"c\": 1}}}">>).
+2> jqerl:process_json(<<".a">>, <<"{\"a\": {\"b\": {\"c\": 1}}}">>).
 {ok,[<<"{\"b\":{\"c\":1}}">>]}
 
-3> jqerl:parse(<<".a|.[]">>, <<"{\"a\": [1,2,3]}">>).
+3> jqerl:process_json(<<".a|.[]">>, <<"{\"a\": [1,2,3]}">>).
 {ok,[<<"1">>,<<"2">>,<<"3">>]}
 ```
 
@@ -275,25 +272,14 @@ be returned:
 {error,{jq_err_parse,<<"Unfinished JSON term at EOF at line 1, column 6 (while parsing '{\"a\": ')">>}}
 ```
 
-### Update 2022-06-09:
-
-"https://github.com/terry-xiaoyu/jqerl" has been moved to
-"https://github.com/emqx/jq". The library has also been extended so that the
-interface supports both a NIF based backend and port based backed. The user can
-configure which backend to use. The port based one is safer (as it cannot crash
-the Erlang VM and cannot cause memory leaks and memory fragmentation inside the
-VM) but the NIF backend is faster. At the time of writing, the JQ function in
-the rule engine can only use the port based backend as this backend is
-currently the only one that supports timeouts. There is a plan to also support
-timeouts in the NIF based backend. When that is possible, EMQX users should be
-given the option to configure which backend to use.
-
 ## Configuration Changes
 
-If we are about to use erlang port to talk to the independent `jq` command line
-tool, then we need a configuration entry for specify the path of the `jq` binary.
-
-Otherwise no configuration change is required.
+The `jq/2` function that was introduced in the EMQX 5.0 release reads the
+configuration setting `rule_engine.jq_function_default_timeout` to get the
+default timeout in milliseconds. We may also introduce a setting for
+configuring which backend to use (the port based one or the NIF based one) when
+we have implemented the timeout feature in NIF backend of the Erlang JQ
+library.  
 
 ## Backwards Compatibility
 
@@ -339,6 +325,6 @@ JQ Syntax in Rule SQL" section above. Please read the first part of the
 "Suggested JQ Syntax in Rule SQL" Section for more details about the added
 functions.
 
-This way of introducing JQ to the rule engine was chosen as it makes it possibe
+This way of introducing JQ to the rule engine was chosen as it makes it possible
 to use JQ in the rule engine without invalidating any of the other suggestions
 for extending the syntax of the rule engine.
