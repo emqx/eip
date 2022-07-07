@@ -1,0 +1,17 @@
+@startuml evacuation-coordinator-statuses-enforce
+skinparam monochrome true
+skinparam ranksep 20
+skinparam dpi 150
+skinparam arrowThickness 0.7
+skinparam packageTitleAlignment left
+skinparam usecaseBorderThickness 0.4
+skinparam defaultFontSize 12
+
+
+(evicting) --> (takeover)
+(evicting) --> (disabled)
+
+(takeover) --> (disabled)
+
+(disabled) --> (evicting)
+@enduml
