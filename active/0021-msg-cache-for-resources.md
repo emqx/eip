@@ -8,7 +8,7 @@ Created: 2021-07-11
 
 ## Abstract
 
-This proposal suggests adding the message cache plane to the `emqx_resource` layer for emqx data integration.
+This proposal suggests adding the message caching mechanism to the `emqx_resource` layer for emqx data integration.
 
 ## Motivation
 
@@ -18,7 +18,7 @@ In emqx 4.x and previous versions, only a few drivers implemented the message ca
 
 In 5.0 we suggest build the message caching function as part of the resource layer, which has the advantage of no need to change any of the drivers.
 
-Based on this message cache plane, we can realize the sync/async querying mode and batching ability in the resource layer.
+Based on the message caching, we can realize the sync/async querying mode and batching ability in the resource layer.
 
 ## Design
 
@@ -28,37 +28,47 @@ There are two choices to implement the message queue. One is the mnesia database
 
 We prefer the `replayq`, mainly because in this feature messages are always added and accessed in a queue, we never access data by primary keys like a KV database. This is exactly the applicable scenario of `replayq`. The data files will be stored in the specified directory of the local file system, which is very simple.
 
-After `replayq` was added to the Kafka driver 2 years ago, it has experienced several emqx versions and has been proved to be very stable.
+The `replayq` was added to the Erlang Kafka driver in 2018, it has experienced several emqx versions and has been proved to be very stable.
 
-### The Resource Layer before the Change
+### The Layers Before the Change
+
+#### Sending Messages Directly to the DB Drivers
 
 Before adding the message cache functionality, the hierarchical structure of the data integration part for sending a message is shown as the following figure:
 
 ![Old Data Plane](0021-assets/resource-old-arch-data-plane.png)
 
-At the top is the pub/sub and the API layer. The messages/queries are sent to the components in the second layer via `emqx_hooks` callbacks.
+When a message or an event is triggered in emqx, the MQTT connection process (in the PubSub layer) calls back the components in the second layer through `emqx_hooks`.
 
-The second layer is the components related to external resources, such as Data Bridge, Authentication (AuthN), Authorization (AuthZ), etc.
+The second layer is the components related to external resources, such as Data Bridge, Authentication (AuthN), Authorization (AuthZ), etc. They calls `emqx_resource:query/3` to query the resources.
 
-The third layer is the resource layer, which is responsible for maintaining the status of resources, as well as management operations such as creation and update of resources.
+The `emqx_resource:query/3` directly calls back the DB drivers in the bottom layer, no messaging passing is needed.
 
-At the bottom is the DB drivers, they are Erlang clients to various data systems, such as Kafka, MySQL, MongoBD, etc.
+#### Managing Resources through the Resource Layer
 
-The MQTT connection process calls `emqx_resource:query/3` to send messages, and the messages flow through all the layers from top to bottom.
+On the other hand, when the user creates resources via HTTP APIs, it calls creation APIs of the second layer (Data Bridges, AuthN and AuthZ), and then they call `emqx_resource:create/3` in the third layer.
 
-A user can create/update/delete resources via HTTP APIs, the API then calls emqx_resource to do the resource management works:
+The `emqx_resource:create/3` creates a resource manager process, all the subsequent management operations will go through the manager process:
 
 ![Old Control Plane](0021-assets/resource-old-arch-control-plane.png)
 
 The resource management calls through all the layers from the top to the bottom.
 
-### Add Resource Workers to the Resource Layer
+### The Layers After the Change
 
-After this feature, the hierarchical structure of the data integration part for sending a message is shown in the following figure:
+We suggest introduce the "resource workers" into the resource layer.
+So that the old resource layer is divided into two parts: "resource workers" and "resource management". 
+
+The "resource workers" is a pool maintains several worker processes.
+It is the component for querying external resources, maintaining the message cache (`replayq`), and sending the messages to the drivers. 
+
+The "resource management" part is the old resource layer, and remains unchanged as before, which is responsible for resource management operations.
+
+#### Sending Messages through the Resource Workers
 
 ![New Data Plane](0021-assets/resource-new-arch-data-plane.png)
 
-The resource layer is divided into two parts: data and control. The data part is the message caching component, we call it the "resource workers", which is responsible for maintaining the message queue, and sending the messages to the drivers. The control part remains unchanged as before, which is responsible for resource management operations:
+#### Managing Resources through the Resource Manager
 
 ![New Data Plane](0021-assets/resource-new-arch-control-plane.png)
 
@@ -66,7 +76,7 @@ The resource layer is divided into two parts: data and control. The data part is
 
 In the current implementation, each time a resource is created, a resource manager process will be created for each resource ID, which is responsible for maintaining the relevant state of the resource. See the code of `emqx_resource_manager` module for details.
 
-After the implementation of message caching is added, we also create a resource worker pool each time a resource is created, which is responsible for the process of accessing resources and message sending.
+After the implementation of message caching is added, we also create a resource worker pool each time a resource is created, which is responsible for the process of accessing external resources and message sending.
 
 The following figure is a schematic diagram of the resource worker pool. Each worker maintains a ReplayQ:
 
