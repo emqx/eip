@@ -1,9 +1,9 @@
 # The Message Cache for Resources
 
 ```
-Author: <Shawn Liu> <506895667@qq.com>
+Author: <Shawn Liu> <liuxy@emqx.io>
 Status: Draft
-Created: 2021-07-11
+Created: 2022-07-11
 ```
 
 ## Abstract
