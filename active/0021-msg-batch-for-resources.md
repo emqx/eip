@@ -1,4 +1,4 @@
-# The Message Cache for Resources
+# The Message Batch for Resources
 
 ```
 Author: <Shawn Liu> <liuxy@emqx.io>
@@ -8,17 +8,22 @@ Created: 2022-07-11
 
 ## Abstract
 
-This proposal suggests adding the message caching mechanism to the `emqx_resource` layer for emqx data integration.
+This proposal suggests adding the message batching mechanism to the `emqx_resource` layer for emqx data integration.
 
 ## Motivation
 
-The purpose of message caching is to cache messages locally (possibly disk or memory) when the external resource service is interrupted, and then replay messages from the message queue after the resource is back to service.
+We need a batching mechanism for all the external resources (MySQL, MongoDB, HTTP, Kafka, etc.) to enhance the throughput.
 
-In emqx 4.x and previous versions, only a few drivers implemented the message caching function (Kafka and MQTT Bridge)
+In 4.x the batching mechanism is implemented by adding a `batcher` process before calling each
+DB driver. For example before starting a MySQL driver pool, we start a batcher process which keeps receiving
+messages, it packs multiple messages into one big `INSERT` SQL (with multiple `VALUES` clauses), and then send it to the underlying MySQL driver.
 
-In 5.0 we suggest build the message caching function as part of the resource layer, which has the advantage of no need to change any of the drivers.
+On the other hand, we also need a message queue before sending messages to the external resources.
+The purpose of message queue is to cache messages locally (possibly disk or memory) when the external resource service is interrupted, and then replay messages from the message queue after the resource is back to service.
 
-Based on the message caching, we can realize the sync/async querying mode and batching ability in the resource layer.
+In emqx 4.x and previous versions, only a 2 drivers implemented the message queue, they are Kafka and MQTT Bridge (based on `replayq`).
+
+In 5.0 we suggest **build the message queue as part of the resource layer**, and then implement the message batching as well as the sync/async querying mode based on this message queue. This way we have the advantage of no need to change any of the drivers.
 
 ## Design
 
@@ -34,7 +39,7 @@ The `replayq` was added to the Erlang Kafka driver in 2018, it has experienced s
 
 #### Sending Messages Directly to the DB Drivers
 
-Before adding the message cache functionality, the hierarchical structure of the data integration part for sending a message is shown as the following figure:
+Before adding the message queue functionality, the hierarchical structure of the data integration part for sending a message is shown as the following figure:
 
 ![Old Data Plane](0021-assets/resource-old-arch-data-plane.png)
 
@@ -60,7 +65,7 @@ We suggest introduce the "resource workers" into the resource layer.
 So that the old resource layer is divided into two parts: "resource workers" and "resource management". 
 
 The "resource workers" is a pool maintains several worker processes.
-It is the component for querying external resources, maintaining the message cache (`replayq`), and sending the messages to the drivers. 
+It is the component for querying external resources, maintaining the message queue (`replayq`), and sending the messages to the drivers. 
 
 The "resource management" part is the old resource layer, and remains unchanged as before, which is responsible for resource management operations.
 
@@ -76,7 +81,7 @@ The "resource management" part is the old resource layer, and remains unchanged 
 
 In the current implementation, each time a resource is created, a resource manager process will be created for each resource ID, which is responsible for maintaining the relevant state of the resource. See the code of `emqx_resource_manager` module for details.
 
-After the implementation of message caching is added, we also create a resource worker pool each time a resource is created, which is responsible for the process of accessing external resources and message sending.
+After the implementation of message queue is added, we also create a resource worker pool each time a resource is created, which is responsible for the process of accessing external resources and message sending.
 
 The following figure is a schematic diagram of the resource worker pool. Each worker maintains a ReplayQ:
 
