@@ -21,19 +21,49 @@ messages, it packs multiple messages into one big `INSERT` SQL (with multiple `V
 On the other hand, we also need a message queue before sending messages to the external resources.
 The purpose of message queue is to cache messages locally (possibly disk or memory) when the external resource service is interrupted, and then replay messages from the message queue after the resource is back to service.
 
-In emqx 4.x and previous versions, only a 2 drivers implemented the message queue, they are Kafka and MQTT Bridge (based on `replayq`).
+In emqx 4.x and previous versions, only 2 drivers implemented the message queue, they are Kafka and MQTT Bridge (based on `replayq`).
 
-In 5.0 we suggest **build the message queue as part of the resource layer**, and then implement the message batching as well as the sync/async querying mode based on this message queue. This way we have the advantage of no need to change any of the drivers.
+**In 5.0 we suggest build the message queue as part of the resource layer**, and then implement the message batching as well as the sync/async querying mode based on this message queue. This way we have the advantage of no need to change any of the drivers.
 
 ## Design
 
-### RocksDB vs. ReplayQ
+### The Old Message Batching/Queuing Design Before the Change
 
-There are two choices to implement the message queue. One is the mnesia database using RocksDB as the backend, and the other is the [replayq](https://github.com/emqx/replayq).
+Before this change, the batching mechanism is implemented by each driver.
 
-We prefer the `replayq`, mainly because in this feature messages are always added and accessed in a queue, we never access data by primary keys like a KV database. This is exactly the applicable scenario of `replayq`. The data files will be stored in the specified directory of the local file system, which is very simple.
+Taking the MySQL as an example, we added a pool of `batcher` processes in front of the MySQL driver.
+And if we want to queue the message locally before sending SQL queries, we have to add `replayq` to each of the `mysql worker`.
+This is shown by the following figure:
 
-The `replayq` was added to the Erlang Kafka driver in 2018, it has experienced several emqx versions and has been proved to be very stable.
+![Old Batching](0021-assets/old_batch_process.png)
+
+The MQTT connection pick a `batcher` process and send messages to it, then the `batcher` process accumulates messages to a big batched SQL query, and send it to the MySQL driver finally.
+
+### The New Message Batching/Queuing Design After the Change
+
+In this proposal we suggest move the `batcher` process into the resource layer (we name it `resource worker`), and also make it maintain the message queue. So we don't have to implement message queuing and batching mechanism for every driver:
+
+![New Batching](0021-assets/new_batch_process.png)
+
+### The Workflow of Resource Workers
+
+In the current implementation, each time a resource is created, a resource manager process will be created for each resource ID, which is responsible for maintaining the relevant state of the resource. See the code of `emqx_resource_manager` module for details.
+
+After the implementation of message queue is added, we also create a resource worker pool each time a resource is created, which is responsible for the process of accessing external resources and message sending.
+
+The messages are first saved by the worker to the queue (which can be memory or disk queue), and then according to the batching policy, the worker takes the message out of the queue and sends it to the corresponding driver through the connector callback modules.
+
+Here is the sequences for querying a resource after the resource workers are added:
+
+![Resource Worker Sequences](0021-assets/resource-worker-sequences.drawio.png)
+
+- When creating the resource worker pool, we can specify the `max_batch_num`, `batch_interval` parameters to control the batching process.
+- Every time a caller calls the resource worker, it can specify `query_mode = sync | async` for control whether wait the result or not.
+
+An improved solution is to let the MQTT connection process append to the message queue directly, and then the resource worker (the consumer process) fetch messages from the queue:
+![Resource Worker Sequences S2](0021-assets/resource_worker_sequences_solution2.drawio.png)
+
+This way we separate the producers (the MQTT connection processes) from the consumers (the resource workers). But for now the `replayq` doesn't support accessing by multiple modules concurrently, so we may need more works on it.
 
 ### The Layers Before the Change
 
@@ -75,26 +105,15 @@ The "resource management" part is the old resource layer, and remains unchanged 
 
 #### Managing Resources through the Resource Manager
 
-![New Data Plane](0021-assets/resource-new-arch-control-plane.png)
+![New Control Plane](0021-assets/resource-new-arch-control-plane.png)
 
-### Pool of Resource Workers with ReplayQs
+### RocksDB vs. ReplayQ
 
-In the current implementation, each time a resource is created, a resource manager process will be created for each resource ID, which is responsible for maintaining the relevant state of the resource. See the code of `emqx_resource_manager` module for details.
+There are two choices to implement the message queue. One is the mnesia database using RocksDB as the backend, and the other is the [replayq](https://github.com/emqx/replayq).
 
-After the implementation of message queue is added, we also create a resource worker pool each time a resource is created, which is responsible for the process of accessing external resources and message sending.
+We prefer the `replayq`, mainly because in this feature messages are always added and accessed in a queue, we never access data by primary keys like a KV database. This is exactly the applicable scenario of `replayq`. The data files will be stored in the specified directory of the local file system, which is very simple.
 
-The following figure is a schematic diagram of the resource worker pool. Each worker maintains a ReplayQ:
-
-![Resource Workers with ReplayQs](0021-assets/resource-workers.png)
-
-The messages are first saved by the worker to the queue (which can be memory or disk queue), and then according to the batching policy, the worker takes the message out of the queue and sends it to the corresponding driver through the connector callback modules.
-
-Here is the sequences for querying a resource after the resource workers are added:
-
-![Resource Worker Sequences](0021-assets/resource-worker-sequences.drawio.png)
-
-- When creating the resource worker pool, we can specify the `max_batch_num`, `batch_interval` parameters to control the batching process.
-- Every time a caller calls the resource worker, it can specify `query_mode = sync | async` for control whether wait the result or not.
+The `replayq` was added to the Erlang Kafka driver in 2018, it has experienced several emqx versions and has been proved to be very stable.
 
 ## Configuration Changes
 
