@@ -7,11 +7,14 @@ skinparam packageTitleAlignment left
 skinparam usecaseBorderThickness 0.4
 skinparam defaultFontSize 12
 
-
-(evicting) --> (takeover)
-(evicting) --> (disabled)
-
-(takeover) --> (disabled)
-
-(disabled) --> (evicting)
+(disabled) --> (evicting_conns)
+(evicting_conns) --> (evicting_conns)
+(evicting_conns) --> (disabled)
+(evicting_conns) --> (waiting_takeover)
+(waiting_takeover) --> (evicting_sessions)
+(waiting_takeover) --> (disabled)
+(evicting_sessions) --> (evicting_sessions)
+(evicting_sessions) --> (prohibiting)
+(evicting_sessions) --> (disabled)
+(prohibiting) --> (disabled)
 @enduml
