@@ -4,6 +4,7 @@
 
 * 2021-05-17: @zhouzb Initial draft
 * 2021-10-04: @zmstone Sync the doc from internal updated 0012 from doc
+* 2022-08-10: @savonarola Update and move to implemented
 
 ## Abstract
 
@@ -70,6 +71,8 @@ NOTE: for temporary errors, such as database connection issue, the error is logg
 
 NOTE: if there is no `ok` (accepted) result after a full chain exhaustion, the login is rejected.
 
+NOTE: empty chain allows anonymous access.
+
 For enhanced authentication, such as `scram` there can be messages after the first request,
 hence the backend may return `{continue, Data}`,
 where `Data` is to be kept by the connection process as handling context for the following messages.
@@ -89,12 +92,12 @@ i.e. without having to restart the `eqmx_authn` application.
 
 ## Configuration
 
-- Example config for built-in-database (mnesia) username/password based global auth
+- Example config for built_in_database (mnesia) username/password based global auth
 
 ```
 authentication {
-  backend: 'built-in-database',
-  mechanism: "password-based",
+  backend: 'built_in_database',
+  mechanism: "password_based",
   ...
   user_id_type: clientid
 }
@@ -105,8 +108,8 @@ authentication {
 ```
 authentication = [
   {
-    backend: 'built-in-database',
-    mechanism: "password-based",
+    backend: 'built_in_database',
+    mechanism: "password_based",
     ...
     user_id_type: clientid
   },
@@ -117,20 +120,56 @@ authentication = [
     "secret_base64_encoded" = false
     use_jwks = false
     verify_claims {}
-  },
+  }
 ]
 ```
 
-- Example config for built-in-database (mnesia) username/password based per-listener auth
+- Example config for built_in_database (mnesia) username/password based per-listener auth
 
 ```
 listener.tcp.default {
   ...
   authentication: {
-    backend: "built-in-database",
-    type: "password-based",
+    backend: "built_in_database",
+    type: "password_based",
     user_id_type: username
   }
+  ...
+}
+```
+
+- Example config for built_in_database (mnesia) username/password based per-gateway/per-listener auth
+
+```
+gateway.stomp {
+  ...
+  # Specific global authenticator for all STOMP listeners
+  authentication = {
+    backend: "built_in_database",
+    type: "password_based",
+    user_id_type: username
+  }
+
+  listeners.tcp.default {
+    ...
+    # Specific authenticator for the specified STOMP listener
+    authentication = {
+      backend: "built_in_database",
+      type: "password_based",
+      user_id_type: username
+    }
+  }
+}
+```
+
+Gateways allow only single authenticator in the chain.
+
+- Disable authentication for a specific listener
+
+```
+listener.tcp.default {
+  ...
+  enable_authn = false
   ...
 }
 ```
@@ -144,27 +183,35 @@ listener.tcp.default {
 
 ```
 GET /authentication
+```
+
+- Add authenticator to the global chain
+
+```
+POST /authentication
+{
+    "backend": "built_in_database",
+    "type": "password_based",
+    ...
+}
+```
+
+- Manage individual authenticators in the global chain
+
+```
 GET /authentication/:id
-```
 
-Where `id` is of format `<Mechanism>:<Backend>`. e.g. `password-based:built-in-database`.
-
-- Delete global auth chain
-
-```
 DELETE /authentication/:id
-```
 
-Update global auth chain
-
-```
-PUT /authentication/password-based:built-in-database
+PUT /authentication/password_based:built_in_database
 {
       ...
 }
 ```
 
-The `PUT` body should be constructed according to the config schemak
+Where `id` is of format `<Mechanism>:<Backend>`. e.g. `password_based:built_in_database`.
+
+The `PUT` body should be constructed according to the config schema.
 
 ### Per-listener auth chain APIs
 
@@ -174,10 +221,10 @@ as the ones for global instances, only the path is prefixed with `listener/liste
 ```
 POST /listeners/:listener_id/authentication
 GET /listeners/:listener_id/authentication
+
 GET /listeners/:listener_id/authentication/:id
 DELETE /listeners/:listener_id/authentication/:id
 PUT /listeners/:listener_id/authentication/:id
-PATCH /listeners/:listener_id/authentication/:id
 ```
 
 A listener name is of format `protocol:id` which is assigend in the config file, e.g.
@@ -188,12 +235,20 @@ listeners.tcp.default {
 }
 ```
 
-The name of this listener is `tcp:default`
+The name of this listener is `tcp:default`.
+
+Gateway endpoints are:
+
+```
+/gateway/:protocol/authentication
+/gateway/:protocol/listeners/:listener_id/authentication
+```
 
 ### Re-positioning APIs
 
 ```
-POST /:id/move
+POST /authentication/:id/move
+POST /listeners/:listener_id/authentication/:id/move
 ```
 
 With a JSON body to indicate where the authenticator is to be re-positioned.
@@ -207,7 +262,7 @@ curl -X 'POST' \
   -H 'accept: */*' \
   -H 'Content-Type: application/json' \
   -d '{
-  "position": "before:password-based:built-in-database"
+  "position": "before:password_based:built_in_database"
 }'
 ```
 
@@ -215,14 +270,56 @@ curl -X 'POST' \
 
 We should also support CRUD APIs for user management, with below endpoints.
 
+- Manage users
+
 ```
-/:id/users
-/listeners/:listener_id/authentication/:id/users
+POST /authentication/password_based:built_in_database/users
+{
+      ...
+}
+GET /authentication/password_based:built_in_database/users
+```
+
+- Manage individual users
+```
+GET /authentication/password_based:built_in_database/users/:user_id
+
+PUT /authentication/password_based:built_in_database/users/:user_id
+{
+
+}
+
+DELETE /authentication/password_based:built_in_database/users/:user_id
 ```
 
 The authenticator ID is made generic although 5.0,
 only the built-in database (Mnesia) is supported.
-That is, only `password-based:built-in-database` is valid for `:id` so far.
+That is, only `password_based:built_in_database` is valid for `:id` so far.
+
+The corresponding per-listener endpoints are:
+
+```
+POST /listeners/:listener_id/authentication/:id/users
+GET /listeners/:listener_id/authentication/:id/users
+
+GET /listeners/:listener_id/authentication/:id/users/:user_id
+PUT /listeners/:listener_id/authentication/:id/users/:user_id
+DELETE /listeners/:listener_id/authentication/:id/users/:user_id
+
+POST /gateway/:name/authentication/users
+GET /gateway/:name/authentication/users
+
+GET /gateway/:name/authentication/users/:user_id
+PUT /gateway/:name/authentication/users/:user_id
+DELETE /gateway/:name/authentication/users/:user_id
+
+POST /gateway/:name/listeners/:id/authentication/users
+GET /gateway/:name/listeners/:id/authentication/users
+
+GET /gateway/:name/listeners/:id/authentication/users/:uset_id
+PUT /gateway/:name/listeners/:id/authentication/users/:uset_id
+DELETE /gateway/:name/listeners/:id/authentication/users/:uset_id
+```
 
 ## Testing suggestions
 

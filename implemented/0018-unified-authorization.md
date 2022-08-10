@@ -4,6 +4,7 @@
 
 * 2021-05: @Rory-Z
 * 2021-10-29: @zmstone Sync the doc from draft in internal wiki
+* 2022-08-10: @savonarola Update and move to implemented
 
 ## Abstract
 
@@ -47,14 +48,14 @@ This proposal introduces a new design for EMQ X 5.0 authorization (ACL), which a
   In 4.x series, the rules are cached in client's process dictionary.
   There is no intention to change such behaviour in 5.0
 
-* Allow more than one sources to form a chain
+* Allow more than one source to form the chain
   - The chain should have a determined order. Unlike the situation in 4.x the ACL check order depends on the plugin start/restart order
-  - Only one instance is allowed for each type of source, e.g. one should not be allowed to configure more than one 'file' type source or `http` type source
-  - Provide APIs to adjust the ordering the chained sources
+  - Only one instance is allowed for each type of source, e.g. one should not be allowed to configure more than one `file` type source or `http` type source
+  - Provide APIs to adjust the ordering of the chained sources
 
 * ACL for gateways, CoAP, MQTT-SN, exproto, Stomp (but not LwM2M)
 
-* Management API to upload rules for 'file' type ACL source
+* Management API to upload rules for `file` type ACL source
 
 
 ## Design
@@ -260,7 +261,7 @@ POST /authorization/sources/{type}/move # mysql,redis,mongodb,postgresql,http...
 { "position": "top" | "bottom" | "after:{type}" | "before:{type}" }
 ```
 
-#### APIs to manage 'file' type source
+#### APIs to manage `file` type source
 
 ```
 GET /authorization/sources/file
