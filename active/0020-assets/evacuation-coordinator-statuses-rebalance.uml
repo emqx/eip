@@ -1,0 +1,20 @@
+@startuml evacuation-coordinator-statuses-rebalance
+skinparam monochrome true
+skinparam dpi 150
+skinparam arrowThickness 0.7
+skinparam usecaseBorderThickness 0.4
+skinparam defaultFontSize 12
+
+
+(disabled) --> (wait_health_check)
+(wait_health_check) --> (evicting_conns)
+(wait_health_check) --> (disabled)
+(evicting_conns) --> (evicting_conns)
+(evicting_conns) --> (wait_takeover)
+(evicting_conns) --> (disabled)
+(wait_takeover) --> (evicting_sessions)
+(wait_takeover) --> (disabled)
+(evicting_sessions) --> (evicting_sessions)
+(evicting_sessions) --> (disabled)
+@enduml
+

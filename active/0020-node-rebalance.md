@@ -55,8 +55,8 @@ for the sessions kept on the node. Session data is preserved on some other node 
 to a new node.
 
 To implement this logic, we introduce two major components:
-* _Eviction Agent_
-* _Rebalance Coordinator_
+* _Eviction Agent_  (`emqx_eviction_agent` application);
+* _Rebalance Coordinator_ (`emqx_node_rebalance` application);
 
 _Eviction Agent_ is an entity that:
 * Blocks incoming connection on its node.
@@ -65,11 +65,15 @@ _Eviction Agent_ is an entity that:
 
 The Eviction Agent is relatively passive and has no eviction logic.
 
+![Eviction agent](./0020-assets/eviction-agent.png)
+
 _Rebalance Coordinator_ is an entity that
 * Enables/Disables Eviction Agent on nodes.
 * Sends connection/session eviction commands according to the evacuation logic.
 
 Rebalance Coordinators contain logic for active connection eviction but know little about connection/session nature.
+
+![Rebalance Coordinator](./0020-assets/node-rebalance.png)
 
 This component decomposition is chosen to decouple working with low-level details from the high-level logic of evacuation:
 * Eviction Agent is aware of connection handling details (hooks, connections, sessions, connection managers, ...);
@@ -105,6 +109,8 @@ Eviction Agent has two states: `enabled` and `disabled`.
 In the `enabled` state, Eviction Agent has _kind_, a label that indicates the purpose for which the agent is used.
 This label is used to avoid a clash between different Rebalance Coordinators, like evacuation and rebalancing.
 
+Eviction Agent always starts in disabled state. It is up to other application to persist enabled state.
+
 #### Internal API
 
 Eviction Agent exposes API for the following actions:
@@ -119,7 +125,7 @@ Eviction Agent exposes API for the following actions:
 
 #### HTTP API
 
-Eviction Agent exposes two endpoints: `/node_eviction/status` and `/node_eviction/heath_check`.
+Eviction Agent exposes one endpoint: `/node_eviction/status`.
 
 #### Algorithm
 
@@ -183,8 +189,8 @@ HTTP/1.1 200 OK
 {
     "status": "enabled",
     "stats": {
-        "current_connected": 25,
-        "current_sessions": 50
+        "connections": 25,
+        "sessions": 50
     }
 }
 ```
@@ -261,7 +267,7 @@ ok = emqx_node_rebalance_evacuation:stop().
 
 ### Evacuation Coordinator (**with** enforced session evacuation)
 
-The states of this Evacuation Coordinator are: `disabled`, `evicting`, and `takeover`.
+The states of this Evacuation Coordinator are: `disabled`, `evicting_conns`, `waiting_takeover`, `evicting_sessions` and `prohibiting`.
 
 ![Evacuation Coordinator Statuses](0020-assets/evacuation-coordinator-statuses-enforce.png)
 
@@ -297,23 +303,31 @@ ok = emqx_node_rebalance_evacuation:start(
 ).
 ```
 
-##### `evicting` state
+##### `evicting_conns` state
 In evicting state, the Evacuation Coordinator, with the help of the Eviction Agent:
  * constantly requests to evict portions of connected clients if there are any;
  * prohibits new connections.
- After some passed/preconfigured amount of time Evacuation Coordinator automatically passes to the `takeover` state.
+After all coonections are evicted Evacuation Coordinator passes to the `wait_takeover` state.
 
-##### `takeover` state
-In the `takeover` state, the Evacuation Coordinator still:
- * constantly requests to evict portions of connected clients if there are any;
+##### `wait_takeover` state
+In `wait_takeover` state, the Evacuation Coordinator, with the help of the Eviction Agent prohibits new connections.
+It waits for disconnected clients to reconnect themselves. After the configured amount of time
+Evacuation Coordinator passes to the `evicting_sessions` state.
+
+##### `evicting_sessions` state
+In the `evicting_sessions` state, the Evacuation Coordinator:
+ * constantly requests to Eviction Agent to evacuate portions of disconnected sessions
+ to one of `migrate_to` nodes;
  * prohibits new connections.
-Additionally, the Evacuation Coordinator constantly requests to evict portions of connected *sessions* to
-some of the specified nodes. The Eviction Agent does this by initiating session takeover processes to virtual channels.
+After all sessions are migrated Evacuation Coordinator passes to the `prohibiting` state.
 
+##### `prohibiting` state
+In the `prohibiting` state, the Evacuation Coordinator prohibits new connections.
 
 ##### Disabling
 On disabling, Evacuation Coordinator:
 * Disables Eviction Agent.
+* Removes persistent data indicating evacuation state.
 * Passes to the `disabled` state.
 
 The internal API is:
@@ -321,11 +335,127 @@ The internal API is:
 ok = emqx_node_rebalance_evacuation:stop().
 ```
 
+### Rebalance Coordinator
+
+The states of this Rebalance Coordinator are: `disabled`, `wait_health_check`, `evicting_conns`, `wait_takeover` and `evicting_sessions`.
+
+![Rebalance Statuces](./0020-assets/evacuation-coordinator-statuses-rebalance.png)
+
+#### Algorithm
+
+##### Starting
+
+##### `disabled` state
+This is the default no-op state.
+
+##### Enabling
+Rebalance is enabled for several (at least two) nodes.
+
+On enabling, Rebalance Coordinator:
+* Divides nodes into two groups: donor nodes having excess number of connections and recipient nodes that lack connections.
+* Checks whether connecion/session count difference between donors and recipients exceeds the configured thresholds (see further).
+* If not, the nodes are considered to be balanced and the rebalancing finishes. If yes — rebalancing proceeds further.
+* Eviction Agents are enabled on donor nodes and _are linked_ to the coordinator.
+* Rebalance Coordinator passes to the `wait_health_check` state.
+
+![Rebalance Start](./0020-assets/node-rebalance-algo0.png)
+
+
+The internal API is:
+```erlang
+ok = emqx_node_rebalance:start(
+    #{
+        wait_health_check => 60000,
+        conn_evict_rate => 10,
+        sess_evict_rate => 10,
+        wait_takeover => 60000,
+        abs_conn_threshold => 100,
+        rel_conn_threshold => 1.1,
+        abs_sess_threshold => 100,
+        rel_sess_threshold => 1.1,
+        nodes => [<<"node1@host1">>, <<"node2@host2">>]
+    }
+).
+```
+
+##### `wait_health_check` state
+In this state the Rebalance Coordinator is
+* waiting for a load balancer (if any) to exclude donor nodes from active backends;
+* prohibits connections to the donor nodes.
+After the configured timeout the Rebalance Coordinator passes to the `evicting_conns` state.
+
+##### `evicting_conns` state
+In `wait_takeover` state, the Rebalance Coordinator:
+* prohibits connections to the donor nodes;
+* constantly evicts connections from donor nodes with the specified `conn_evict_rate`.
+
+![Evicting Conns](./0020-assets/node-rebalance-algo1.png)
+
+Eviction terminates when difference bettween average connection counts on donors and recipients becomes within configured
+threshold:
+```
+avg(DonorConns) < avg(RecipientConns) + abs_conn_threshold OR avg(DonorConns) < avg(RecipientConns) * rel_conn_threshold
+```
+
+![Evicting Conns](./0020-assets/node-rebalance-algo2.png)
+
+Then the Rebalance Coordinator passes to the `wait_takeover` state.
+
+##### `wait_takeover` state
+In the `wait_takeover` state, the Rebalance Coordinator
+* prohibits connections to the donor nodes;
+* waits for the clients to reconnect.
+
+After the configured amount of time the Rebalance Coordinator passes to the `evicting_sessions` state.
+
+##### `evicting_sessions` state
+In `wait_takeover` state, the Rebalance Coordinator:
+* constantly evicts sessions from donor nodes to the recipient nodes with the specified `conn_evict_rate`;
+* prohibits connections to the donor nodes.
+
+The rule and the termination condition is simmilar to the one of `evicting_conns` state:
+```
+avg(DonorSess) < avg(RecipientSess) + abs_sess_threshold OR avg(DonorSess) < avg(RecipientSess) * rel_sess_threshold
+```
+
+Then the Rebalance Coordinator passes to the `disabled` state.
+
+##### Disabling
+On disabling, the Rebalance Coordinator disables Eviction Agents on donor nodes thus allowing connections to them.
+
+The internal API is:
+```erlang
+ok = emqx_node_rebalance_evacuation:stop().
+```
+
+
 ### REST API
 
 HTTP responses are the following.
 
+#### Health Check
+
+This should be a node-local request.
+
+Request:
+```
+GET /api/v4/load_rebalance/availability_check
+```
+
+Response when connections/sessions are being evacuated from the node:
+```
+HTTP/1.1 503 Service Unavailable
+```
+
+Response when the node does not participate in rebalacing and accepts connections:
+```
+HTTP/1.1 200 OK
+```
+
 #### Status
+
+This is a node-local status. Enabled status indicates that the node is being evacuated
+or is currently a donor node.
 
 Request:
 ```
@@ -338,6 +468,7 @@ HTTP/1.1 200 OK
 
 {
     "status": "enabled",
+    "process": "evacuation",
     "connection_goal": 0,
     "session_goal": 0,
     "connection_eviction_rate": 100,
@@ -360,44 +491,158 @@ HTTP/1.1 200 OK
 }
 ```
 
-#### Health Check
+#### Global Status
 
-This should be a node-local request.
+This is global status, lists of all evacuations/rebalances across the cluster.
 
 Request:
 ```
-GET /api/v4/load_rebalance/availability_check
+GET /api/v4/load_rebalance/global_status
 ```
 
-Response when connections/sessions are being evacuated from the node:
-```
-HTTP/1.1 503 Service Unavailable
-```
-
-Response when the node does not participate in rebalacing and accepts connections:
+Response:
 ```
 HTTP/1.1 200 OK
+
+{
+    "evacuations": {
+        "node5@host5": {
+            "state": "waiting_takeover",
+            "connection_goal": 0,
+            "session_goal": 0,
+            "connection_eviction_rate": 100,
+            "session_eviction_rate": 100,
+            "stats": {
+                "initial_connected": 25,
+                "initial_sessions": 50,
+                "current_connected": 25,
+                "current_sessions": 50
+            }
+        }
+    },
+    "rebalances": {
+        "node0@host0": {
+            "state": "evicting_conns",
+            "coordinator_node": "node@host",
+            "connection_eviction_rate": 10,
+            "session_eviction_rate": 20,
+            "donors": ["node1@host1", "node2@host2"],
+            "recipients": ["node3@host3", "node4@host4"]
+        }
+    }
+}
+```
+
+#### Start Rebalance
+
+Start rebalance with the specified node as the coordinator.
+
+Request:
+```
+POST /api/v4/load_rebalance/node1@host1/start
+
+{
+    "wait_health_check": 60000,
+    "conn_evict_rate": 10,
+    "sess_evict_rate": 10,
+    "wait_takeover": 60000,
+    "abs_conn_threshold": 100,
+    "rel_conn_threshold": 1.1,
+    "abs_sess_threshold": 100,
+    "rel_sess_threshold": 1.1,
+    "nodes": ["node1@host1", "node2@host2"]
+}
+```
+
+Response:
+```
+HTTP/1.1 200 OK
+
+{"code":0}
+```
+
+#### Stop Rebalance
+
+Stop rebalance with the specified node as the coordinator.
+
+Request:
+```
+POST /api/v4/load_rebalance/node1@host1/stop
+
+{}
+```
+
+Response:
+```
+HTTP/1.1 200 OK
+
+{"code":0}
+```
+
+#### Start Evacuation
+
+Start evacuation on the specified node.
+
+Request:
+```
+POST /api/v4/load_rebalance/node1@host1/evacuation/start
+
+{
+    "conn_evict_rate": 10,
+    "sess_evict_rate": 10,
+    "wait_takeover": 60000,
+    "server_reference": "srv:123",
+    "migrate_to": ["node1@host1", "node2@host2"]
+}
+```
+
+Response:
+```
+HTTP/1.1 200 OK
+
+{"code":0}
+```
+
+#### Stop Evacuation
+
+Stop evacuation on the specified node.
+
+Request:
+```
+POST /api/v4/load_rebalance/node1@host1/evacuation/stop
+
+{}
+```
+
+Response:
+```
+HTTP/1.1 200 OK
+
+{"data":[],"code":0}
 ```
 
 ### CLI Interface
 
-#### Without enforced session evacuation
-
 ```
-emqx_ctl rebalance start --evacuation [--redirect-to "host1:port1 host2:port2"] \
-                          [--conn-evict-rate 100]
-emqx_ctl rebalance status
-emqx_ctl rebalance stop
-```
-
-#### With enforced session evacuation
-
-```
-emqx_ctl rebalance start --evacuation [--redirect-to "host1:port1 host2:port2"] \
-                          [--migrate-to "node1@host1 node2@host2"] \
-                          [--conn-evict-rate 100] \
-                          [--wait-takeover 60000] \
-                          [--sess-evict-rate 50]
-emqx_ctl rebalance status
-emqx_ctl rebalance stop
+rebalance start --evacuation \
+    [--redirect-to "Host1:Port1 Host2:Port2 ..."] \
+    [--conn-evict-rate CountPerSec] \
+    [--migrate-to "node1@host1 node2@host2 ..."] \
+    [--wait-takeover Secs] \
+    [--sess-evict-rate CountPerSec]
+rebalance start \
+    [--nodes "node1@host1 node2@host2"] \
+    [--wait-health-check Secs] \
+    [--conn-evict-rate ConnPerSec] \
+    [--abs-conn-threshold Count] \
+    [--rel-conn-threshold Fraction] \
+    [--conn-evict-rate ConnPerSec] \
+    [--wait-takeover Secs] \
+    [--sess-evict-rate CountPerSec] \
+    [--abs-sess-threshold Count] \
+    [--rel-sess-threshold Fraction]
+rebalance node-status
+rebalance node-status "node1@host1"
+rebalance status
+rebalance stop
 ```
