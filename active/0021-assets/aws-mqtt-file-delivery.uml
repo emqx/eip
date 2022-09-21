@@ -1,0 +1,88 @@
+@startuml
+!theme blueprint
+== Use DescribeStream to get stream data ==
+Device -> Broker: Subscribe('/description')
+Broker --> Device: Sub Ack
+Device -> Broker: Subscribe('/rejected')
+Broker --> Device: Sub Ack
+Device -> Broker: Publish('/describe')
+note right
+DescribeStreamRequest
+{
+    "c": "ec944cfb-1e3c-49ac-97de-9dc4aaad0039"
+}
+"c" client token field
+end note
+Broker --> Device: Publish('/description')
+note left
+DescribeStreamResponse
+{
+    "c": "ec944cfb-1e3c-49ac-97de-9dc4aaad0039",
+    "s": 1,
+    "d": "This is the description of stream ABC.",
+    "r": [
+        {
+            "f": 0,
+            "z": 131072
+        },
+        {
+            "f": 1,
+            "z": 51200
+        }
+    ]
+}
+"c": client token field
+"s": stream version as an integer
+"r": contains a list of the files in the stream.
+     "f": stream file ID as an integer.
+     "z": stream file size in number of bytes.
+"d": description of the stream.
+end note
+== Get data blocks from a stream file ==
+Device -> Broker: Subscribe('/data')
+Broker --> Device: Sub Ack
+Device -> Broker: Publish('/get')
+note right
+GetStreamRequest
+{
+    "c": "1bb8aaa1-5c18-4d21-80c2-0b44fee10380",
+    "s": 1,
+    "f": 0,
+    "l": 4096,
+    "o": 2,
+    "n": 100,
+    "b": "..."
+}
+[optional] "c": client token field
+[optional] "s": stream version field
+"f": stream file ID
+"l": data block size in bytes
+[optional] "o": offset of the block in the stream file
+[optional] "n": number of blocks requested
+[optional] "b": bitmap that represents the blocks being requested
+end note
+Broker --> Device: Publish('/data')
+note left
+GetStreamResponse
+{
+    "c": "1bb8aaa1-5c18-4d21-80c2-0b44fee10380",
+    "f": 0,
+    "l": 4096,
+    "i": 2,
+    "p": "..."
+}
+"c": client token field
+"f": ID of the stream file
+"l": size of the data block payload in bytes
+"i": ID of the data block contained in the payload
+"p": the data block payload (base64)
+end note
+Broker --> Device: Publish('/data')
+note left
+GetStreamResponse
+end note
+Broker --> Device: Publish('/data')
+note left
+GetStreamResponse
+end note
+@enduml

@@ -1,0 +1,33 @@
+@startuml
+!theme blueprint
+Device -> Broker: Publish('$prefix/<color red>filename</color>/0')
+note right
+<binary blob 1kB>
+end note
+Broker -> Cache: store <color red>filename</color> at 0, 1kB
+Cache --> Broker: ok
+Broker --> Device: Pub Ack 0x00
+Device -> Broker: Publish('$prefix/<color red>filename</color>/1024')
+note right
+<binary blob 1kB>
+end note
+Device -> Broker: Publish('$prefix/<color red>filename</color>/2048')
+note right
+<binary blob 1kB>
+end note
+Device -> Broker: Publish('$prefix/<color red>filename</color>/3072')
+note right
+<binary blob 1kB>
+end note
+Broker -> Cache: store <color red>filename</color> at 1024, 3kB
+Cache --> Broker: ok
+Broker --> Device: Pub Ack 0x00
+Broker --> Device: Pub Ack 0x00
+Broker --> Device: Pub Ack 0x00
+Device -> Broker: Publish('$prefix/<color red>filename</color>/fin')
+Broker -> Cache: finalize <color red>filename</color>
+Cache -> Storage: upload <color red>filename</color>
+Storage --> Cache: upload ok
+Cache --> Broker: fin ok
+Broker --> Device: Pub Ack 0x00
+@enduml

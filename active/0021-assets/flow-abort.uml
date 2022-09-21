@@ -1,0 +1,14 @@
+@startuml
+!theme blueprint
+Device -> Broker: Publish('$prefix/<color red>filename</color>/0')
+note right
+<binary blob 1kB>
+end note
+Broker -> Cache: store <color red>filename</color> at 0, 1kB
+Cache --> Broker: ok
+Broker --> Device: Pub Ack 0x00
+Device -> Broker: Publish('$prefix/<color red>filename</color>/abort')
+Broker -> Cache: delete <color red>filename</color>
+Cache --> Broker: ok
+Broker --> Device: Pub Ack 0x00
+@enduml
