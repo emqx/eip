@@ -1,12 +1,18 @@
 @startuml
 !theme blueprint
-Device -> Broker: Publish('$prefix/<color red>filename</color>/0')
-Broker --> Device: Pub Ack 0x10
-Device -> Broker: Publish('$prefix/<color red>filename</color>/0')
+Client -> Server: PUBLISH('$file/{fileId}/{sha256}')
 note right
-<binary blob 1kB>
+Header/Packet Identifier: 3
+Payload: <binary blob 1kB>
 end note
-Broker -> Cache: store <color red>filename</color> at 0, 1kB
-Cache --> Broker: ok
-Broker --> Device: Pub Ack 0x00
+Server --> Server: error
+Server --> Client: PUBACK 0x80, Packet Identifier: 3
+Client -> Server: PUBLISH('$file/{fileId}/{sha256}')
+note right
+Header/Packet Identifier: 3
+Payload: <binary blob 1kB>
+end note
+Server -> Cache: store {filepath}/{filename} at 3072, 1kB
+Cache --> Server: ok
+Server --> Client: PUBACK 0x00, Packet Identifier: 3
 @enduml

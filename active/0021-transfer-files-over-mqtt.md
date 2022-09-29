@@ -10,123 +10,154 @@ TODO:
 
 ## Motivation
 
-EMQX customers are asking for file transfer functionality from IoT devices to their cloud (primary use case), and from cloud to IoT devices over MQTT. Right now they are uploading files from devices via FTP or HTTPS (e.g. to S3), but it's not working well. For example, both FTP and HTTP servers usually struggle to keep with large number of simultaneous bandwith-intensive connections. Another issue is that uploading files over weak/spotty/unreliable network is not a good experience due to frequent connection reset and transfer restarts.
+EMQX customers are asking for file transfer functionality from IoT devices to their cloud (primary use case), and from cloud to IoT devices over MQTT. Right now they are uploading files from devices via FTP or HTTPS (e.g. to S3), but this approach has downsides:
 
-Device-to-cloud file transfer use cases:
+* FTP and HTTP servers usually struggle to keep up with large number of simultaneous bandwidth-intensive connections
+* packet loss or reconnect forces clients to restart the transfer
+* devices which already talk MQTT need to integrate with one more SDK, address authenticaion and authorization, and potentially go through an additional round of security audit
+
+Known cases of device-to-cloud file transfer:
 
 * [CAN bus](https://en.wikipedia.org/wiki/CAN_bus) data
 * Image taken by industry camera for Quality Assurance
 * Large data file collected from forklift
 * Video and audio data from truck cars, and video data captured by inbound unloading cameras
-* Vehicle real-time logging data and messaging
-* ML logs
+* Vehicle real-time logging, telemetry, messaging
+* Upload collected ML logs
 
-Cloud-to-device file transfer use cases:
+Known cases of cloud-to-device file transfer:
 
-* AI/ML models
+* Upload AI/ML models
 * Firmware upgrades
 
-With EMQX, Customers can transfer real-time IoT data (e.g. structured, as well as unstructured IoT, sensor, and industrial data), and will also support offline types of bulk data transfer (video, audio, images,  compressed log files, etc.), which, combined with EMQX's rules engine, will make it extremely easy for users to connect any IoT data to the cloud.
+## Terminology
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [BCP 14](https://www.rfc-editor.org/bcp/bcp14) [[RFC2119](https://www.rfc-editor.org/rfc/rfc2119)] [[RFC8174](https://www.rfc-editor.org/rfc/rfc8174)] when, and only when, they appear in all capitals, as shown here.
+
+The following terms are used as described in [MQTT Version 5.0 Specification](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc39010030):
+* Application Message
+* Server
+* Client
+* Topic Name
+* Topic Filter
+* MQTT Control Packet
+
+*At least once*: a message can be delivered many times, but cannot be lost
 
 ## Requirements
 
-* Simultaneous transfer of MQTT and various types of files over a single network connection
-* Separate data transfer and file transfer channels to achieve non-blocking transmission
-  * Channel priority setting, specify the priority of different channels according to customer requirements
-  * Channels can cooperate with each other to achieve overall flow control
-  * Multiple channels can be specified for file transfer at the same time to increase file transfer parallelism
-* Efficient transmission support in weak network
-  * File transfer in weak networks such as Telematics and mobile
-  * Automatic file chunking, block-based granularity breakpoint transfer (or file-level breakpoint transfer?)
-  * Switch to TCP if QUIC is not available
+* The protocol MUST use only PUBLISH type of MQTT Control Packet
+* The protocol MUST support transfer of file segments
+* Server MUST be able to verify integrity of each file segment
+* Client MAY know total file size when initiating the transfer
+* Client MAY abort file transfer
+* Server MAY ask the client to pause file transfer
+* Server MAY ask the client to abort file transfer
+* The protocol MUST NOT require changes in client code
+* The protocol MUST guarantee "At least once" delivery
+* Server MUST NOT support subscription on topics dedicated for file transfer
 
 ## AWS IoT MQTT-based file delivery (reference design)
 
 As an example of existing implementation we can look at AWS IoT Core [which provides functionality](https://docs.aws.amazon.com/iot/latest/developerguide/mqtt-based-file-delivery.html) to [deliver files to IoT devices](https://docs.aws.amazon.com/iot/latest/developerguide/mqtt-based-file-delivery-in-devices.html):
 
-![AWS IoT MQTT-based file delivery Device --> Cloud](0021-assets/aws-mqtt-file-delivery.png)
+![](0021-assets/aws-mqtt-file-delivery.png)
 
 ## Design
 
-In the first phase we are going to focus on limited scope:
+### Overview
 
-* device-to-cloud file transfer only
-* reusing existing TCP connection
-* push only, i.e. broker cannot request file transfer, but device can start sending files any time
-* device may not know total file size when starting the transfer
+* Files are split in segments of equal length with the exception of the last segment, it's length is > 0 and  <= segment length
+* Client generates UUID for each file being transferred and use it as file Id in Topic Name
+* Client calculates sha256 checksum of the segment it's about to send and sends it as part of Topic Name
+* Client uses $file Topic Filter to transfer files
+* Clients cannot subscribe to $file topics
+* Segment length can be calculated on the server side by subtracting the length of the [Variable Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901025) from the [Remaining Length](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901105) field that is in the [Fixed Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901021)
+* Data is transferred in PUBLISH packets in the following order:
+  1. $file/{fileId}/init
+  2. $file/{fileId}/{sha256sum}
+  3. $file/{fileId}/{sha256sum}
+  4. ...
+  3. $file/{fileId}/[fin|abort]
+* Client can send up to N (configured) PUBLISH packets before blocking for PUBACK
 
-### Requirements
+#### `$file/{fileId}/init` message
 
-* Based on the MQTT protocol. Use MQTT messages to encapsulate file bodies
-* Transport layer TCP, TCP/TLS and QUIC (TCP fallback) multiplexing connections with other service topics​
-* High concurrency (multiple uploads in progress)
-* MQTT Client single/bi-directional transfer (active file upload, passive file download)
-* Fault tolerance: disconnected retransmission (sender side)
-* Fragmentation: (multi parts, fragments)
-* Multi-channel: multiple TCP connections, QUIC multi-streams
-* Cancellation: Both parties can pause or cancel the transfer, and an event notification is required when the transfer is complete. (How to notify? What is the target of the notification?)
-* Minimal code changes on Client side, SDK support available. (low code/no code)
-* Minimize data retransmission, and reduce network pressure and bandwidth usage.
-* RestAPI interface Query transfer status
-* EMQX local incomplete file cache
-* Client API should be easy to use: easy to migrate from existing applications (ftp, nfs, s3)
-* File body Encryption and decryption (with external key management)?
+Initialize the file transfer. Server is expected to store metadata from the payload in the session along with `{fileId}` as a reference for the rest of file metadata.
 
-### Out of scope
+  * Qos=1
+  * DUP=0 for the initial segment transfer, 1 when retransmitting
+  * Payload Format Indicator=0x01
+  * `{fileId}` is corresponding file UUID
+  * Payload is a JSON document with the following properties:
+    * filepath
+      * a character string composed with characters from this set [a-zA-Z0-9_-./]
+      * length in bytes MUST be <= 4096 (PATH_MAX=4096 on most common Linux filesystems)
+    * filename
+      * a character string composed with characters from this set [a-zA-Z0-9_-./]
+      * length in bytes MUST be < 256 (NAME_MAX=255 in Linux)
+    * size
+      * total file size in bytes
 
-* Non-reliable transmission is not supported
-* No support for one-to-many transfers
-* No distributed cache storage
-* Broker does not aware of interrupted transfer, It will be client-side implementation
+#### `$file/{fileId}/{sha256sum}` message
 
-### Limitations
+One such message for each file segment.
 
-* File transfer is PUSH mechanism but not support POLL, the receiving side cannot request to initiate the transfer
-decisions of the size of a slice cannot be as natural as streaming.
-* Due to network bandwidth limitations, it may happen that multiple files are transferred in parallel but all fail to complete the transfer in the desired time.
-* Do not get too hung up on the length of the topic and do not take advantage of "topic alias" (MQTT 5.0)
-* Performance may be limited by disk IO (network in speed > disk out speed)
-* Overwrite existing file SEG
-* Linux filename length 255 bytes. path_max 4096
-* EMQX terminates file transfers, file message MQTT forwarding (as proxy) is not required.
-* QUIC in EMQX does not support HTTP/3 protocol, old client supports HTTP upload, how to smooth migration?
+  * Qos=1
+  * DUP=0 for the initial segment transfer, 1 when retransmitting
+  * Payload Format Indicator=0x00
+  * Packet Identifier=sequential file segment number
+  * Payload is file segment bytes
+  * `{sha256sum}` is sha256 checksum of file segment bytes
 
-### Protocol design
+#### `$file/{fileId}/fin` message
 
-* Maximum bandwidth utilization, high signal-to-noise ratio (DATA/ MQTT HEADER)
-* Asynchronous stateless non-continuous transfer, sliceable, messy (retransmission after disconnection) (parallel transfer of multiple files)
-* Fault tolerance.
-  * Incomplete packets Disconnected.
-  * Transmission can be paused or resumed for a long time
-  * Interactive completions required???
-* Local caching of file contents
-* Utilizes only MQTT topic and payload (Payload Format Indicator?). No header changes.
-* TCP multi-connection support (using Same Client ID)
-* User could manipulate file names, and paths. (blacklist/check file names/path, or relative path only)
-* Symmetric transfer (client -> broker)
-* PUBACK (QoS) guarantees transmission reliability (considering that the client does not receive PUBACK and resends it after disconnection)?
+All file segments have been successfully transferred.
+
+  * Qos=1
+  * no payload
+
+#### `$file/{fileId}/abort` message
+
+Client wants to abort the transfer.
+
+  * Qos=1
+  * no payload
+
+### PUBACK Reason codes
+
+| Reason code | MQTT Name                     | Meaning in file transfer context                    |
+|-------------|-------------------------------|-----------------------------------------------------|
+| OMIT        |                               | Same as 0x00                                        |
+| 0x00        | Success                       | File segment has been successfully persisted        |
+| 0x10        | No matching subscribers       | Server asks Client to retransmit all segments       |
+| 0x80        | Unspecified error             | Server asks Client to retransmit a specific segment. Segment sequential number is indicated by Packet Identifier field in the PUBACK Variable Header |
+| 0x83        | Implementation specific error | Server asks Client to cancel the transfer           |
+| 0x97        | Quota exceeded                | Server asks Client to pause the transfer            |
+
+#### 0x83, "Implementation specific error", "Cancel Transfer"
+
+Client can retry the transfer after 1 hour.
+
+#### 0x97, "Quota exceeded", "Pause Transfer"
+
+Upon receiving PUBACK message with this reason code, Client is expected to delay sending next packet for 10 seconds. If next PUBACK is also 0x97, Client delays for 20 seconds. Client continues to double the delay length until it reaches 80 seconds.
+
+### PUBACK from MQTT servers < v5.0
+
+PUBACK messages prior to MQTT v5.0 do not carry Reason code. In this case when client did not receive PUBACK, it MUST keep trying to retransmit the corresponding message according to the protocol.
 
 ### Happy path
 
-![Happy path](0021-assets/flow-happy-path.png)
+![](0021-assets/flow-happy-path.png)
 
-### Transfer abort initiated by device
+### Transfer abort initiated by client
 
-![Transfer abort initiated by device](0021-assets/flow-abort.png)
+![](0021-assets/flow-abort.png)
 
-### Transfer restart initiated by broker
+### Transfer restart initiated by server
 
-![Transfer restart initiated by broker](0021-assets/flow-restart.png)
-
-### Reason codes in messages from broker
-
-| Reason code | MQTT Name                     | Packet | Meaning in file transfer context                    |
-|-------------|-------------------------------|--------|-----------------------------------------------------|
-| OMIT        |                               |        | Same as 0x00                                        |
-| 0x00        | Success                       | PUBACK | The content of the Publish message is persisted     |
-| 0x10        | No matching subscribers       | PUBACK | Receiver asks Sender to restart the transfer from 0 |
-| 0x83        | Implementation specific error | PUBACK | Receiver asks to cancel the transfer                |
-| 0x97        | Quota exceeded                | PUBACK | Receiver asks to pause the transfer. Retry logic shall be agreed/configured before hand |
+![](0021-assets/flow-restart.png)
 
 ## Configuration Changes
 
@@ -155,7 +186,6 @@ manually, list them here.
 * Multiple backend writes to a single file
 * Support for rules processing of metadata
 * Generate modified properties of target files based on file metadata and rules of rules engine
-* Trigger event data when file upload starts/completes Enter rule chain for rule engine
 * Do the entire MQTT message logging
 * QUIC pure binary stream support
 * ACL enables client-side control of file size

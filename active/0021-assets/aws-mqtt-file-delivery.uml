@@ -1,11 +1,11 @@
 @startuml
 !theme blueprint
 == Use DescribeStream to get stream data ==
-Device -> Broker: Subscribe('/description')
-Broker --> Device: Sub Ack
-Device -> Broker: Subscribe('/rejected')
-Broker --> Device: Sub Ack
-Device -> Broker: Publish('/describe')
+Client -> Server: Subscribe('/description')
+Server --> Client: Sub Ack
+Client -> Server: Subscribe('/rejected')
+Server --> Client: Sub Ack
+Client -> Server: Publish('/describe')
 note right
 DescribeStreamRequest
 {
@@ -13,7 +13,7 @@ DescribeStreamRequest
 }
 "c" client token field
 end note
-Broker --> Device: Publish('/description')
+Server --> Client: Publish('/description')
 note left
 DescribeStreamResponse
 {
@@ -39,9 +39,9 @@ DescribeStreamResponse
 "d": description of the stream.
 end note
 == Get data blocks from a stream file ==
-Device -> Broker: Subscribe('/data')
-Broker --> Device: Sub Ack
-Device -> Broker: Publish('/get')
+Client -> Server: Subscribe('/data')
+Server --> Client: Sub Ack
+Client -> Server: Publish('/get')
 note right
 GetStreamRequest
 {
@@ -61,7 +61,7 @@ GetStreamRequest
 [optional] "n": number of blocks requested
 [optional] "b": bitmap that represents the blocks being requested
 end note
-Broker --> Device: Publish('/data')
+Server --> Client: Publish('/data')
 note left
 GetStreamResponse
 {
@@ -77,11 +77,11 @@ GetStreamResponse
 "i": ID of the data block contained in the payload
 "p": the data block payload (base64)
 end note
-Broker --> Device: Publish('/data')
+Server --> Client: Publish('/data')
 note left
 GetStreamResponse
 end note
-Broker --> Device: Publish('/data')
+Server --> Client: Publish('/data')
 note left
 GetStreamResponse
 end note

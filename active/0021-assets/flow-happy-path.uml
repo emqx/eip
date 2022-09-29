@@ -1,33 +1,52 @@
 @startuml
 !theme blueprint
-Device -> Broker: Publish('$prefix/<color red>filename</color>/0')
+Client -> Client: generate UUID=8568BA42-..
+Client -> Server: PUBLISH('$file/8568BA42-../init')
 note right
-<binary blob 1kB>
+{
+  "filename": "data.log",
+  "filepath": "/client/ml-logs/",
+  "size": 3075
+}
 end note
-Broker -> Cache: store <color red>filename</color> at 0, 1kB
-Cache --> Broker: ok
-Broker --> Device: Pub Ack 0x00
-Device -> Broker: Publish('$prefix/<color red>filename</color>/1024')
+Server --> Client: PUBACK 0x00
+Client -> Client: read segment #0, calculate sha256
+Client -> Server: PUBLISH('$file/8568BA42-../{sha256}')
 note right
-<binary blob 1kB>
+Header/Packet Identifier: 0
+Payload: <binary blob 1kB>
 end note
-Device -> Broker: Publish('$prefix/<color red>filename</color>/2048')
+Server -> Cache: store /client/ml-logs/data.log at 0, 1kB
+Cache --> Server: ok
+Server --> Client: PUBACK 0x00, Packet Identifier: 0
+Client -> Client: read segment #1, calculate sha256
+Client -> Server: PUBLISH('$file/8568BA42-../{sha256}')
 note right
-<binary blob 1kB>
+Header/Packet Identifier: 1
+Payload: <binary blob 1kB>
 end note
-Device -> Broker: Publish('$prefix/<color red>filename</color>/3072')
+Client -> Client: read segment #2, calculate sha256
+Client -> Server: PUBLISH('$file/8568BA42-../{sha256}')
 note right
-<binary blob 1kB>
+Header/Packet Identifier: 2
+Payload: <binary blob 1kB>
 end note
-Broker -> Cache: store <color red>filename</color> at 1024, 3kB
-Cache --> Broker: ok
-Broker --> Device: Pub Ack 0x00
-Broker --> Device: Pub Ack 0x00
-Broker --> Device: Pub Ack 0x00
-Device -> Broker: Publish('$prefix/<color red>filename</color>/fin')
-Broker -> Cache: finalize <color red>filename</color>
-Cache -> Storage: upload <color red>filename</color>
+Client -> Client: read segment #3, calculate sha256
+Client -> Server: PUBLISH('$file/8568BA42-../{sha256}')
+note right
+Header/Packet Identifier: 3
+Payload: <binary blob 3 bytes>
+end note
+Server -> Cache: store /client/ml-logs/data.log at 1024, 2051 bytes
+Cache --> Server: ok
+Server --> Client: PUBACK 0x00, Packet Identifier: 1
+Server --> Client: PUBACK 0x00, Packet Identifier: 2
+Server --> Client: PUBACK 0x00, Packet Identifier: 3
+Client -> Server: PUBLISH('$file/8568BA42-../fin')
+Server -> Cache: finalize /client/ml-logs/data.log
+Cache -> Storage: upload /client/ml-logs/data.log
 Storage --> Cache: upload ok
-Cache --> Broker: fin ok
-Broker --> Device: Pub Ack 0x00
+Cache --> Server: fin ok
+Server --> Client: PUBACK 0x00
+Cache --> Cache: delete /client/ml-logs/data.log
 @enduml
