@@ -11,38 +11,39 @@ note right
 end note
 Server --> Client: PUBACK 0x00
 Client -> Client: read segment #0, calculate sha256
-Client -> Server: PUBLISH('$file/8568BA42-../{sha256}')
+Client -> Server: PUBLISH('$file/8568BA42-../0/{sha256}')
 note right
-Header/Packet Identifier: 0
 Payload: <binary blob 1kB>
 end note
+Server -> Server: verify checksum - ok
 Server -> Cache: store /client/ml-logs/data.log at 0, 1kB
 Cache --> Server: ok
-Server --> Client: PUBACK 0x00, Packet Identifier: 0
+Server --> Client: PUBACK 0x00
 Client -> Client: read segment #1, calculate sha256
-Client -> Server: PUBLISH('$file/8568BA42-../{sha256}')
+Client -> Server: PUBLISH('$file/8568BA42-../1024/{sha256}')
 note right
-Header/Packet Identifier: 1
 Payload: <binary blob 1kB>
 end note
 Client -> Client: read segment #2, calculate sha256
-Client -> Server: PUBLISH('$file/8568BA42-../{sha256}')
+Client -> Server: PUBLISH('$file/8568BA42-../2048/{sha256}')
 note right
-Header/Packet Identifier: 2
 Payload: <binary blob 1kB>
 end note
 Client -> Client: read segment #3, calculate sha256
-Client -> Server: PUBLISH('$file/8568BA42-../{sha256}')
+Client -> Server: PUBLISH('$file/8568BA42-../3072/{sha256}')
 note right
-Header/Packet Identifier: 3
 Payload: <binary blob 3 bytes>
 end note
+Server -> Server: verify checksum - ok
+Server -> Server: verify checksum - ok
+Server -> Server: verify checksum - ok
 Server -> Cache: store /client/ml-logs/data.log at 1024, 2051 bytes
 Cache --> Server: ok
-Server --> Client: PUBACK 0x00, Packet Identifier: 1
-Server --> Client: PUBACK 0x00, Packet Identifier: 2
-Server --> Client: PUBACK 0x00, Packet Identifier: 3
-Client -> Server: PUBLISH('$file/8568BA42-../fin')
+Server --> Client: PUBACK 0x00
+Server --> Client: PUBACK 0x00
+Server --> Client: PUBACK 0x00
+Client -> Server: PUBLISH('$file/8568BA42-../fin/{sha256}')
+Server -> Server: verify checksum - ok
 Server -> Cache: finalize /client/ml-logs/data.log
 Cache -> Storage: upload /client/ml-logs/data.log
 Storage --> Cache: upload ok

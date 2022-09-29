@@ -48,12 +48,11 @@ The following terms are used as described in [MQTT Version 5.0 Specification](ht
 
 * The protocol MUST use only PUBLISH type of MQTT Control Packet
 * The protocol MUST support transfer of file segments
-* Server MUST be able to verify integrity of each file segment
+* Server MUST be able to verify integrity of each file segment and of the whole file
 * Client MAY know total file size when initiating the transfer
 * Client MAY abort file transfer
 * Server MAY ask the client to pause file transfer
 * Server MAY ask the client to abort file transfer
-* The protocol MUST NOT require changes in client code
 * The protocol MUST guarantee "At least once" delivery
 * Server MUST NOT support subscription on topics dedicated for file transfer
 
@@ -67,7 +66,7 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
 
 ### Overview
 
-* Files are split in segments of equal length with the exception of the last segment, it's length is > 0 and  <= segment length
+* Files are split in segments, segments can be of arbitrary length
 * Client generates UUID for each file being transferred and use it as file Id in Topic Name
 * Client calculates sha256 checksum of the segment it's about to send and sends it as part of Topic Name
 * Client uses $file Topic Filter to transfer files
@@ -75,10 +74,10 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
 * Segment length can be calculated on the server side by subtracting the length of the [Variable Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901025) from the [Remaining Length](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901105) field that is in the [Fixed Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901021)
 * Data is transferred in PUBLISH packets in the following order:
   1. $file/{fileId}/init
-  2. $file/{fileId}/{sha256sum}
-  3. $file/{fileId}/{sha256sum}
+  2. $file/{fileId}/{offset}/{sha256sum}
+  3. $file/{fileId}/{offset}/{sha256sum}
   4. ...
-  3. $file/{fileId}/[fin|abort]
+  3. $file/{fileId}/[fin/{sha256sum} | abort]
 * Client can send up to N (configured) PUBLISH packets before blocking for PUBACK
 
 #### `$file/{fileId}/init` message
@@ -96,10 +95,10 @@ Initialize the file transfer. Server is expected to store metadata from the payl
     * filename
       * a character string composed with characters from this set [a-zA-Z0-9_-./]
       * length in bytes MUST be < 256 (NAME_MAX=255 in Linux)
-    * size
+    * size [optional]
       * total file size in bytes
 
-#### `$file/{fileId}/{sha256sum}` message
+#### `$file/{fileId}/{offset}/{sha256sum}` message
 
 One such message for each file segment.
 
@@ -108,14 +107,16 @@ One such message for each file segment.
   * Payload Format Indicator=0x00
   * Packet Identifier=sequential file segment number
   * Payload is file segment bytes
+  * `{offset}` is byte offset of the given segment
   * `{sha256sum}` is sha256 checksum of file segment bytes
 
-#### `$file/{fileId}/fin` message
+#### `$file/{fileId}/fin/{sha256sum}` message
 
 All file segments have been successfully transferred.
 
   * Qos=1
   * no payload
+  * `{sha256sum}` is sha256 checksum of the file
 
 #### `$file/{fileId}/abort` message
 

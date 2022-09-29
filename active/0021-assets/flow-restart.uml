@@ -1,18 +1,17 @@
 @startuml
 !theme blueprint
-Client -> Server: PUBLISH('$file/{fileId}/{sha256}')
+Client -> Server: PUBLISH('$file/{fileId}/0/{sha256}')
 note right
-Header/Packet Identifier: 3
 Payload: <binary blob 1kB>
 end note
-Server --> Server: error
-Server --> Client: PUBACK 0x80, Packet Identifier: 3
-Client -> Server: PUBLISH('$file/{fileId}/{sha256}')
+Server --> Server: verify checksum - failed
+Server --> Client: PUBACK 0x80
+Client -> Server: PUBLISH('$file/{fileId}/0/{sha256}')
 note right
-Header/Packet Identifier: 3
 Payload: <binary blob 1kB>
 end note
-Server -> Cache: store {filepath}/{filename} at 3072, 1kB
+Server --> Server: verify checksum - ok
+Server -> Cache: store {filepath}/{filename} at 0, 1kB
 Cache --> Server: ok
-Server --> Client: PUBACK 0x00, Packet Identifier: 3
+Server --> Client: PUBACK 0x00
 @enduml
