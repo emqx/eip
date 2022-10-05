@@ -1,4 +1,4 @@
-# MQTT based file transfer
+# File transfer over MQTT
 
 ## Changelog
 
@@ -6,7 +6,7 @@
 
 ## Abstract
 
-TODO:
+This documents defines protocol to send files from MQTT clients to MQTT server. It is using only PUBLISH and PUBACK messages and does not require MQTT 5.0 features like topic aliases.
 
 ## Motivation
 
@@ -30,14 +30,17 @@ Known cases of cloud-to-device file transfer:
 * Upload AI/ML models
 * Firmware upgrades
 
+Even though devices could already send binary data in MQTT packets, it is not trivial to guarantee reliable file transfer without clear expectations from client and server side.
+
 ## Terminology
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [BCP 14](https://www.rfc-editor.org/bcp/bcp14) [[RFC2119](https://www.rfc-editor.org/rfc/rfc2119)] [[RFC8174](https://www.rfc-editor.org/rfc/rfc8174)] when, and only when, they appear in all capitals, as shown here.
 
-The following terms are used as described in [MQTT Version 5.0 Specification](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc39010030):
+The following terms are used as described in [MQTT Version 5.0 Specification](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html):
 * Application Message
 * Server
 * Client
+* Topic
 * Topic Name
 * Topic Filter
 * MQTT Control Packet
@@ -67,10 +70,12 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
 ### Overview
 
 * Files are split in segments, segments can be of arbitrary length
-* Client generates UUID for each file being transferred and use it as file Id in Topic Name
+* Client MUST generate UUID according to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122) for each file being transferred and use it as file Id in Topic Name
+* Broker MUST validate that provided UUID conforms to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122)
 * Client calculates sha256 checksum of the segment it's about to send and sends it as part of Topic Name
-* Client uses $file Topic Filter to transfer files
-* Clients cannot subscribe to $file topics
+* Broker MUST calculate checksum of the segment data it received and verify that it matches the one in Topic Name
+* Client uses $file Topic to transfer files
+* Broker MUST NOT let clients subscribe to $file topics
 * Segment length can be calculated on the server side by subtracting the length of the [Variable Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901025) from the [Remaining Length](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901105) field that is in the [Fixed Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901021)
 * Data is transferred in PUBLISH packets in the following order:
   1. $file/{fileId}/init
@@ -78,7 +83,6 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
   3. $file/{fileId}/{offset}/{sha256sum}
   4. ...
   3. $file/{fileId}/[fin/{sha256sum} | abort]
-* Client can send up to N (configured) PUBLISH packets before blocking for PUBACK
 
 #### `$file/{fileId}/init` message
 
@@ -88,15 +92,48 @@ Initialize the file transfer. Server is expected to store metadata from the payl
   * DUP=0 for the initial segment transfer, 1 when retransmitting
   * Payload Format Indicator=0x01
   * `{fileId}` is corresponding file UUID
-  * Payload is a JSON document with the following properties:
-    * filepath
-      * a character string composed with characters from this set [a-zA-Z0-9_-./]
-      * length in bytes MUST be <= 4096 (PATH_MAX=4096 on most common Linux filesystems)
-    * filename
-      * a character string composed with characters from this set [a-zA-Z0-9_-./]
-      * length in bytes MUST be < 256 (NAME_MAX=255 in Linux)
-    * size [optional]
-      * total file size in bytes
+  * Payload is a JSON document
+
+##### `init` payload JSON Schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emqx.io/file-over-mqtt.init.schema.json",
+  "title": "init",
+  "description": "Schema for payload of the init message",
+  "type": "object",
+  "properties": {
+    "name": {
+      "description": "File name",
+      "type": "string"
+    },
+    "size": {
+      "description": "Total file size in bytes, optional.",
+      "type": "integer"
+    },
+    "expire_at": {
+      "description": "File expiration time as UNIX Epoch.
+                      After this point in time broker can delete the file.",
+      "type": "integer"
+    },
+    "segment_ttl": {
+      "description": "Time-to-leave (in seconds) for segments of incomplete file transfer.
+                      Broker will garbage collect segments of unfinished transfers when
+                      this time expires. If not set, broker will use its own default value.",
+      "type": "integer"
+    },
+    "user_data": {
+      "description": "User-defined metadata, optional.",
+      "type": "object"
+    }
+  },
+  "required": [ "name", "expire_at" ]
+}
+```
+
+* Broker SHOULD have default setting for `segment_ttl`
+* Broker MAY delete segments of unfinished file transfers when their TTL has expired
 
 #### `$file/{fileId}/{offset}/{sha256sum}` message
 
@@ -105,10 +142,9 @@ One such message for each file segment.
   * Qos=1
   * DUP=0 for the initial segment transfer, 1 when retransmitting
   * Payload Format Indicator=0x00
-  * Packet Identifier=sequential file segment number
   * Payload is file segment bytes
   * `{offset}` is byte offset of the given segment
-  * `{sha256sum}` is sha256 checksum of file segment bytes
+  * `{sha256sum}` is sha256 checksum of the file segment
 
 #### `$file/{fileId}/fin/{sha256sum}` message
 
@@ -136,17 +172,13 @@ Client wants to abort the transfer.
 | 0x83        | Implementation specific error | Server asks Client to cancel the transfer           |
 | 0x97        | Quota exceeded                | Server asks Client to pause the transfer            |
 
-#### 0x83, "Implementation specific error", "Cancel Transfer"
-
-Client can retry the transfer after 1 hour.
-
 #### 0x97, "Quota exceeded", "Pause Transfer"
 
-Upon receiving PUBACK message with this reason code, Client is expected to delay sending next packet for 10 seconds. If next PUBACK is also 0x97, Client delays for 20 seconds. Client continues to double the delay length until it reaches 80 seconds.
+Client is expected to wait before trying to retransmit file segment again.
 
 ### PUBACK from MQTT servers < v5.0
 
-PUBACK messages prior to MQTT v5.0 do not carry Reason code. In this case when client did not receive PUBACK, it MUST keep trying to retransmit the corresponding message according to the protocol.
+PUBACK messages prior to MQTT v5.0 do not carry Reason code, it's up to the Client to decide if, when and how to retry.
 
 ### Happy path
 
@@ -160,47 +192,42 @@ PUBACK messages prior to MQTT v5.0 do not carry Reason code. In this case when c
 
 ![](0021-assets/flow-restart.png)
 
-## Configuration Changes
-
-This section should list all the changes to the configuration files (if any).
-
 ## Backwards Compatibility
 
-This sections should shows how to make the feature is backwards compatible.
-If it can not be compatible with the previous emqx versions, explain how do you
-propose to deal with the incompatibilities.
-
-## Document Changes
-
-If there is any document change, give a brief description of it here.
-
-## Testing Suggestions
-
-The final implementation must include unit test or common test code. If some
-more tests such as integration test or benchmarking test that need to be done
-manually, list them here.
+Full backward compatibility with MQTT 5.x and MQTT 3.x.
 
 ## Innovation Opportunities
 
 * Integration with rule engine
-* Support for more back-end, database writes
+* Pluggable storage backends
 * Multiple backend writes to a single file
-* Support for rules processing of metadata
-* Generate modified properties of target files based on file metadata and rules of rules engine
 * Do the entire MQTT message logging
 * QUIC pure binary stream support
 * ACL enables client-side control of file size
 * Bulk upload at EMQX
 * Multi-node local cache utilization similar to hdfs
+* Cheaper (in computational costs) checksum algorithm
+* Server-to-client file transfer protocol
 
 ## Declined Alternatives
 
 * Use of MQTT extension headers
   * Poor compatibility and complex application layer implementation
-* Only supports QUIC protocol
-  * Always need to support fallback to TCP so TCP needs to be supported as well
 * Capability negotiation
   * Poor client compatibility, complex application layer implementation
-* Front-end implementation is directly integrated into the rule engine
-  * Rule engine is too complex and not applicable in the case of few types of backend support, only the configuration part can be seen to be reused.
+* Client supplied file name as file identifier instead of UUID
+  * potential security issues
+  * potential name clashing issues
+* File sha256 checksum instead of UUID
+  * will not work if client does not have full file when initiating the transfer
+* sha256 checksum as part of the payload, not as part of topic name
+  * Requires specification for payload serialization format leading to more complicated client code
+* File segment offset as part of the payload
+  * Same as above, Requires specification for payload serialization format and more complicated code
+* Do not calculate sha256 of segments and files, require clients to use TLS which already guarantees data ingegrity
+  * TLS guarantees that the bytes written to the sending socket are the same bytes received in the receiving socket, but it does not help if data becomes corrupted before writing to the sending socket, or on the receiver side after reading the data from the socket
+  * We can't really expect clients to always use TLS
+  * If clients will start using QUIC as transport for MQTT packets, TLS will not be applicable
+* Using constant segment size (per file) and sequential segment number instead of byte offset to reduce packet size
+  * Clients may want to change segment size dynamically to account for changes in network properties (e.g. moving from faster to slower and spotty network, or vice versa)
 
