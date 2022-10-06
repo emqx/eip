@@ -96,43 +96,9 @@ Initialize the file transfer. Server is expected to store metadata from the payl
 
 ##### `init` payload JSON Schema
 
-```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://emqx.io/file-over-mqtt.init.schema.json",
-  "title": "init",
-  "description": "Schema for payload of the init message",
-  "type": "object",
-  "properties": {
-    "name": {
-      "description": "File name",
-      "type": "string"
-    },
-    "size": {
-      "description": "Total file size in bytes, optional.",
-      "type": "integer"
-    },
-    "expire_at": {
-      "description": "File expiration time as UNIX Epoch.
-                      After this point in time broker can delete the file.",
-      "type": "integer"
-    },
-    "segment_ttl": {
-      "description": "Time-to-leave (in seconds) for segments of incomplete file transfer.
-                      Broker will garbage collect segments of unfinished transfers when
-                      this time expires. If not set, broker will use its own default value.",
-      "type": "integer"
-    },
-    "user_data": {
-      "description": "User-defined metadata, optional.",
-      "type": "object"
-    }
-  },
-  "required": [ "name", "expire_at" ]
-}
-```
+Available [here](https://github.com/emqx/mqtt-file-transfer-schema/blob/v1.0.0/init.json).
 
-* Broker SHOULD have default setting for `segment_ttl`
+* Broker SHOULD have default setting for `segments_ttl`
 * Broker MAY delete segments of unfinished file transfers when their TTL has expired
 
 #### `$file/{fileId}/{offset}/{sha256sum}` message
