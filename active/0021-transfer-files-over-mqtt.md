@@ -2,7 +2,7 @@
 
 ## Changelog
 
-* 2022-09-20: @qzhuyan, @id Initial draft
+* 2022-09-20: @qzhuyan, @id, @zmstone Initial draft
 
 ## Abstract
 
@@ -72,24 +72,29 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
 * Files are split in segments, segments can be of arbitrary length
 * Client MUST generate UUID according to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122) for each file being transferred and use it as file Id in Topic Name
 * Broker MUST validate that provided UUID conforms to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122)
-* Client calculates sha256 checksum of the segment it's about to send and sends it as part of Topic Name
-* Broker MUST calculate checksum of the segment data it received and verify that it matches the one in Topic Name
-* Client uses $file Topic to transfer files
+* Client MAY calculate SHA-256 checksum of the segment it's about to send and send it as part of Topic Name
+* Client MAY calculate SHA-256 checksum of the file it's about to send and include it in the `init` message payload or send is as part of the `fin` message
+* If Client chooses to provide checksum for file segments, whole file, or both, it MUST use [SHA-256](https://www.rfc-editor.org/rfc/rfc6234)
+* If checksum is included in the `init` message payload, the Broker MUST use it to verify integrity of the file after receving the `fin` message for the corresponding file transfer
+* If checksum is included in topic name, Broker MUST use it to verify integrity of corresponding data:
+  * segment, if it's a segment transfer message
+  * whole file, if it's a `fin` message
+* If checksum verification fails, Broker MUST reject the corresponding data
+* Client MUST use $file Topic to transfer files
 * Broker MUST NOT let clients subscribe to $file topics
 * Segment length can be calculated on the server side by subtracting the length of the [Variable Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901025) from the [Remaining Length](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901105) field that is in the [Fixed Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901021)
 * Data is transferred in PUBLISH packets in the following order:
   1. $file/{fileId}/init
-  2. $file/{fileId}/{offset}/{sha256sum}
-  3. $file/{fileId}/{offset}/{sha256sum}
+  2. $file/{fileId}/{offset}[/{checksum}]
+  3. $file/{fileId}/{offset}[/{checksum}]
   4. ...
-  3. $file/{fileId}/[fin/{sha256sum} | abort]
+  3. $file/{fileId}/[fin[/{checksum}] | abort]
 
 #### `$file/{fileId}/init` message
 
 Initialize the file transfer. Server is expected to store metadata from the payload in the session along with `{fileId}` as a reference for the rest of file metadata.
 
   * Qos=1
-  * DUP=0 for the initial segment transfer, 1 when retransmitting
   * Payload Format Indicator=0x01
   * `{fileId}` is corresponding file UUID
   * Payload is a JSON document
@@ -101,24 +106,23 @@ Available [here](https://github.com/emqx/mqtt-file-transfer-schema/blob/v1.0.0/i
 * Broker SHOULD have default setting for `segments_ttl`
 * Broker MAY delete segments of unfinished file transfers when their TTL has expired
 
-#### `$file/{fileId}/{offset}/{sha256sum}` message
+#### `$file/{fileId}/{offset}[/{checksum}]` message
 
 One such message for each file segment.
 
   * Qos=1
-  * DUP=0 for the initial segment transfer, 1 when retransmitting
   * Payload Format Indicator=0x00
   * Payload is file segment bytes
   * `{offset}` is byte offset of the given segment
-  * `{sha256sum}` is sha256 checksum of the file segment
+  * optional `{checksum}` is SHA-256 checksum of the file segment
 
-#### `$file/{fileId}/fin/{sha256sum}` message
+#### `$file/{fileId}/fin[/{checksum}]` message
 
 All file segments have been successfully transferred.
 
   * Qos=1
   * no payload
-  * `{sha256sum}` is sha256 checksum of the file
+  * optional `{checksum}` is SHA-256 checksum of the file
 
 #### `$file/{fileId}/abort` message
 
@@ -184,16 +188,12 @@ Full backward compatibility with MQTT 5.x and MQTT 3.x.
 * Client supplied file name as file identifier instead of UUID
   * potential security issues
   * potential name clashing issues
-* File sha256 checksum instead of UUID
+* checksum value instead of UUID
   * will not work if client does not have full file when initiating the transfer
-* sha256 checksum as part of the payload, not as part of topic name
+* checksum as part of the payload, not as part of topic name
   * Requires specification for payload serialization format leading to more complicated client code
 * File segment offset as part of the payload
   * Same as above, Requires specification for payload serialization format and more complicated code
-* Do not calculate sha256 of segments and files, require clients to use TLS which already guarantees data ingegrity
-  * TLS guarantees that the bytes written to the sending socket are the same bytes received in the receiving socket, but it does not help if data becomes corrupted before writing to the sending socket, or on the receiver side after reading the data from the socket
-  * We can't really expect clients to always use TLS
-  * If clients will start using QUIC as transport for MQTT packets, TLS will not be applicable
 * Using constant segment size (per file) and sequential segment number instead of byte offset to reduce packet size
   * Clients may want to change segment size dynamically to account for changes in network properties (e.g. moving from faster to slower and spotty network, or vice versa)
 
