@@ -4,8 +4,8 @@ Client -> Client: generate UUID=8568BA42-..
 Client -> Server: PUBLISH('$file/8568BA42-../init')
 note right
 {
-  "filename": "data.log",
-  "filepath": "/client/ml-logs/",
+  "name": "/client/ml-logs/data.log",
+  "expire_at": 1696659943
   "size": 3075
 }
 end note
