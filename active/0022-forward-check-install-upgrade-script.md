@@ -3,6 +3,7 @@
 ## Changelog
 
 * 2022-12-07: @thalesmg Initial draft
+* 2022-12-13: @thalesmg Added comment about downgrading
 
 ## Abstract
 
@@ -78,6 +79,13 @@ respectively.
    3. Then we just call `emqx-<target version>` with the same
       arguments: `emqx-<target version> {install,unpack,upgrade}
       <target version>`.
+
+For _downgrading_, since a newer script might have bug fixes and also
+have laxer restrictions on the source and target versions (for
+example, an older script might forbid 5.0 <-> 5.1, but the newer one
+allows it), we have to use the _newer_ script as well.  Otherwise the
+user might risk getting stuck at the newer version without being able
+to downgrade.
 
 ## Configuration Changes
 
