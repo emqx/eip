@@ -138,7 +138,7 @@ Client wants to abort the transfer.
 | OMIT        |                               | Same as 0x00                                        |
 | 0x00        | Success                       | File segment has been successfully persisted        |
 | 0x10        | No matching subscribers       | Server asks Client to retransmit all segments       |
-| 0x80        | Unspecified error             | Server asks Client to retransmit a specific segment. Segment sequential number is indicated by Packet Identifier field in the PUBACK Variable Header |
+| 0x80        | Unspecified error             | For segment transmission, Server asks Client to retransmit the segment. For `fin`, Server asks Client to retransmit all segments |
 | 0x83        | Implementation specific error | Server asks Client to cancel the transfer           |
 | 0x97        | Quota exceeded                | Server asks Client to pause the transfer            |
 
