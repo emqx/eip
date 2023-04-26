@@ -42,7 +42,7 @@ Cache --> Server: ok
 Server --> Client: PUBACK 0x00
 Server --> Client: PUBACK 0x00
 Server --> Client: PUBACK 0x00
-Client -> Server: PUBLISH('$file/8568BA42-../fin/{sha256}')
+Client -> Server: PUBLISH('$file/8568BA42-../fin/3075/{sha256}')
 Server -> Server: verify checksum - ok
 Server -> Cache: finalize /client/ml-logs/data.log
 Cache -> Storage: upload /client/ml-logs/data.log

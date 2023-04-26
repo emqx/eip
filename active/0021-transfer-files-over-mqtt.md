@@ -92,23 +92,46 @@ Data is transferred in PUBLISH packets in the following order:
 2. `$file/{fileId}/{offset}[/{checksum}]`
 3. `$file/{fileId}/{offset}[/{checksum}]`
 4. ...
-5. `$file/{fileId}/[fin[/{checksum}] | abort]`
+5. `$file/{fileId}/[fin/{fileSize}[/{checksum}] | abort]`
 
 #### `$file/{fileId}/init` message
 
-Initialize the file transfer. Server is expected to store metadata from the payload in the session along with `{fileId}` as a reference for the rest of file metadata.
+Initialize the file transfer. Server is expected to store metadata from the payload in the session along with `{fileId}` as a reference for the rest of file transfer.
 
   * Qos=1
   * Payload Format Indicator=0x01
   * `{fileId}` is corresponding file UUID
   * Payload is a JSON document
 
+Getting a successful `PUBACK` from the Broker means that the file transfer has been initialized successfully, and the metadata has been persisted in the storage.
+
+Broker MAY refuse to accept the file transfer in case of the metadata conflict, e.g. if the transfer with the same `{fileId}` has different `name` or `checksum` value. Client is expected to start the transfer with a different `{fileId}`.
+
+Broker MAY abort incomplete file transfers after their respective sessions have been discarded, and clean up any resources associated with them.
+
 ##### `init` payload JSON Schema
 
 Available [here](https://github.com/emqx/mqtt-file-transfer-schema/blob/v1.0.0/init.json).
 
+* Broker MAY use `name` value as a filename in a file system
+
+    This generally means that it SHOULD NOT contain path separators, and SHOULD NOT contain characters or sequences
+    of characters that are not allowed in filenames in the file system where the file is going to be stored. Also,
+    the filename SHOULD be limited to 255 bytes (in UTF-8 encoding).
+
+* Broker SHOULD consider `size` value as informational only, given it's not required to be provided by the client
+
+    Mandatory file size should be specified in the `fin` message Topic anyway, and may be different from the value
+    provided in the `size` field. The `size` field may be used for example to calculate the progress of the transfer,
+    which thus may be inaccurate.
+
 * Broker SHOULD have default setting for `segments_ttl`
+
 * Broker MAY delete segments of unfinished file transfers when their TTL has expired
+
+* Broker MAY NOT honor `segments_ttl` value that is either too large or too small
+
+    What means _too large_ or _too small_ is up to the Broker implementation and/or configuration.
 
 #### `$file/{fileId}/{offset}[/{checksum}]` message
 
@@ -120,7 +143,9 @@ One such message for each file segment.
   * `{offset}` is byte offset of the given segment
   * optional `{checksum}` is SHA-256 checksum of the file segment
 
-#### `$file/{fileId}/fin[/{checksum}]` message
+Getting a successful `PUBACK` from the Broker means that the file segment has been verified (if checksum was provided) and successfully persisted in the storage.
+
+#### `$file/{fileId}/fin/{fileSize}[/{checksum}]` message
 
 All file segments have been successfully transferred.
 
@@ -128,12 +153,25 @@ All file segments have been successfully transferred.
   * no payload
   * optional `{checksum}` is SHA-256 checksum of the file
 
+Getting a successful `PUBACK` from the Broker means that the file being transferred is ready to be used. This implies a lot of things:
+  * Broker has verified that it has corresponding metadata for the file
+  * Broker has verified that it has all the segments of the file up to `{fileSize}` persisted in the storage
+  * Broker has verified the file integrity (if checksum was provided)
+  * Broker has published the file along with its metadata to the location where it can be accessed by other users
+
+Clients MUST expect that handling of the `fin` message may take considerable time, depending on the file size and the
+Broker implementation or configuration.
+
 #### `$file/{fileId}/abort` message
 
 Client wants to abort the transfer.
 
   * Qos=1
   * no payload
+
+### Durability
+
+This specification does not define how reliably the file transfer data SHOULD be persisted. It is up to the Broker implementation what specific durability guarantees it provides (e.g. datasync or replication factor). However, Broker is expected to support transfers that are interrupted by a network failure, Broker restart, or Client reconnect.
 
 ### PUBACK Reason codes
 
