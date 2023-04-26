@@ -70,8 +70,9 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
 ### Overview
 
 * Files are split in segments, segments can be of arbitrary length
-* Client MUST generate UUID according to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122) for each file being transferred and use it as file Id in Topic Name
-* Broker MUST validate that provided UUID conforms to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122)
+* Client SHOULD generate unique identifier for each file being transferred and use it as `fileId` in Topic Name (UUID according to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122) is recommended)
+* Client SHOULD consider `fileId` as a unique identifier for the file transfer, and MUST NOT reuse it for other file transfers
+* Broker SHOULD consider `clientId` + `fileId` pair as a Broker-wide unique identifier for the file transfer
 * Client MAY calculate SHA-256 checksum of the segment it's about to send and send it as part of Topic Name
 * Client MAY calculate SHA-256 checksum of the file it's about to send and include it in the `init` message payload or send is as part of the `fin` message
 * If Client chooses to provide checksum for file segments, whole file, or both, it MUST use [SHA-256](https://www.rfc-editor.org/rfc/rfc6234)
@@ -105,9 +106,11 @@ Initialize the file transfer. Server is expected to store metadata from the payl
 
 Getting a successful `PUBACK` from the Broker means that the file transfer has been initialized successfully, and the metadata has been persisted in the storage.
 
-Broker MAY refuse to accept the file transfer in case of the metadata conflict, e.g. if the transfer with the same `{fileId}` has different `name` or `checksum` value. Client is expected to start the transfer with a different `{fileId}`.
+Broker MAY refuse to accept the file transfer in case of the metadata conflict, e.g. if the transfer with the same `{fileId}` from the same Client has different `name` or `checksum` value. Client is expected to start the transfer with a different `{fileId}`.
 
 Broker MAY abort incomplete file transfers after their respective sessions have been discarded, and clean up any resources associated with them.
+
+Broker MAY refuse the file transfer if the `fileId` is too long, but generally `fileId`s of up to 255 bytes (in UTF-8 encoding) should be safe to use.
 
 ##### `init` payload JSON Schema
 
