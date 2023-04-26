@@ -6,7 +6,7 @@
 
 ## Abstract
 
-This documents defines protocol to send files from MQTT clients to MQTT server. It is using only PUBLISH and PUBACK messages and does not require MQTT 5.0 features like topic aliases.
+This document defines protocol to send files from MQTT clients to MQTT server. It is using only `PUBLISH` and `PUBACK` messages and does not require MQTT 5.0 features like topic aliases.
 
 ## Motivation
 
@@ -14,7 +14,7 @@ EMQX customers are asking for file transfer functionality from IoT devices to th
 
 * FTP and HTTP servers usually struggle to keep up with large number of simultaneous bandwidth-intensive connections
 * packet loss or reconnect forces clients to restart the transfer
-* devices which already talk MQTT need to integrate with one more SDK, address authenticaion and authorization, and potentially go through an additional round of security audit
+* devices which already talk MQTT need to integrate with one more SDK, address authentication and authorization, and potentially go through an additional round of security audit
 
 Known cases of device-to-cloud file transfer:
 
@@ -34,7 +34,7 @@ Even though devices could already send binary data in MQTT packets, it is not tr
 
 ## Terminology
 
-The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [BCP 14](https://www.rfc-editor.org/bcp/bcp14) [[RFC2119](https://www.rfc-editor.org/rfc/rfc2119)] [[RFC8174](https://www.rfc-editor.org/rfc/rfc8174)] when, and only when, they appear in all capitals, as shown here.
+The keywords "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [BCP 14](https://www.rfc-editor.org/bcp/bcp14) [[RFC2119](https://www.rfc-editor.org/rfc/rfc2119)] [[RFC8174](https://www.rfc-editor.org/rfc/rfc8174)] when, and only when, they appear in all capitals, as shown here.
 
 The following terms are used as described in [MQTT Version 5.0 Specification](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html):
 * Application Message
@@ -75,20 +75,24 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
 * Client MAY calculate SHA-256 checksum of the segment it's about to send and send it as part of Topic Name
 * Client MAY calculate SHA-256 checksum of the file it's about to send and include it in the `init` message payload or send is as part of the `fin` message
 * If Client chooses to provide checksum for file segments, whole file, or both, it MUST use [SHA-256](https://www.rfc-editor.org/rfc/rfc6234)
-* If checksum is included in the `init` message payload, the Broker MUST use it to verify integrity of the file after receving the `fin` message for the corresponding file transfer
+* If checksum is included in the `init` message payload, the Broker MUST use it to verify integrity of the file after receiving the `fin` message for the corresponding file transfer
 * If checksum is included in topic name, Broker MUST use it to verify integrity of corresponding data:
   * segment, if it's a segment transfer message
   * whole file, if it's a `fin` message
 * If checksum verification fails, Broker MUST reject the corresponding data
-* Client MUST use $file Topic to transfer files
-* Broker MUST NOT let clients subscribe to $file topics
+* Client MUST use Topic starting with `$file/` to transfer files
+* Broker MUST NOT let clients subscribe to Topics starting with `$file/` topics
 * Segment length can be calculated on the server side by subtracting the length of the [Variable Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901025) from the [Remaining Length](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901105) field that is in the [Fixed Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901021)
-* Data is transferred in PUBLISH packets in the following order:
-  1. $file/{fileId}/init
-  2. $file/{fileId}/{offset}[/{checksum}]
-  3. $file/{fileId}/{offset}[/{checksum}]
-  4. ...
-  3. $file/{fileId}/[fin[/{checksum}] | abort]
+
+### Protocol flow
+
+Data is transferred in PUBLISH packets in the following order:
+
+1. `$file/{fileId}/init`
+2. `$file/{fileId}/{offset}[/{checksum}]`
+3. `$file/{fileId}/{offset}[/{checksum}]`
+4. ...
+5. `$file/{fileId}/[fin[/{checksum}] | abort]`
 
 #### `$file/{fileId}/init` message
 
@@ -148,7 +152,7 @@ Client is expected to wait before trying to retransmit file segment again.
 
 ### PUBACK from MQTT servers < v5.0
 
-PUBACK messages prior to MQTT v5.0 do not carry Reason code, it's up to the Client to decide if, when and how to retry.
+`PUBACK` messages prior to MQTT v5.0 do not carry Reason code, it's up to the Client to decide if, when and how to retry.
 
 ### Happy path
 
@@ -175,7 +179,7 @@ Full backward compatibility with MQTT 5.x and MQTT 3.x.
 * QUIC pure binary stream support
 * ACL enables client-side control of file size
 * Bulk upload at EMQX
-* Multi-node local cache utilization similar to hdfs
+* Multi-node local cache utilization similar to HDFS
 * Cheaper (in computational costs) checksum algorithm
 * Server-to-client file transfer protocol
 
