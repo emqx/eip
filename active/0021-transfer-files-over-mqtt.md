@@ -90,10 +90,34 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
 Data is transferred in PUBLISH packets in the following order:
 
 1. `$file/{fileId}/init`
+
+    ```
+    {
+      "name": "ml-logs-data.log",
+      "size": 12345,
+      "checksum": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      "expire_at": 1696659943,
+      "segments_ttl": 600
+    }
+    ```
+
 2. `$file/{fileId}/{offset}[/{checksum}]`
+
+    ```
+    <file segment data>
+    ```
+
 3. `$file/{fileId}/{offset}[/{checksum}]`
+
+    ```
+    <file segment data>
+    ```
+
 4. ...
+
 5. `$file/{fileId}/[fin/{fileSize}[/{checksum}] | abort]`
+
+    No payload
 
 #### `$file/{fileId}/init` message
 

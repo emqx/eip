@@ -4,7 +4,7 @@ Client -> Client: generate UUID=8568BA42-..
 Client -> Broker: PUBLISH('$file/8568BA42-../init')
 note right
 {
-  "name": "/client/ml-logs/data.log",
+  "name": "ml-logs-data.log",
   "expire_at": 1696659943
   "size": 3075
 }
@@ -16,7 +16,7 @@ note right
 Payload: <binary blob 1kB>
 end note
 Broker -> Broker: verify checksum - ok
-Broker -> Broker: store /client/ml-logs/data.log at 0, 1kB
+Broker -> Broker: store logs/data-log at 0, 1kB
 Broker --> Client: PUBACK 0x00
 Client -> Client: read segment #1, calculate sha256
 Client -> Broker: PUBLISH('$file/8568BA42-../1024/{sha256}')
@@ -36,14 +36,14 @@ end note
 Broker -> Broker: verify checksum - ok
 Broker -> Broker: verify checksum - ok
 Broker -> Broker: verify checksum - ok
-Broker -> Broker: store /client/ml-logs/data.log at 1024, 2051 bytes
+Broker -> Broker: store logs/data-log at 1024, 2051 bytes
 Broker --> Client: PUBACK 0x00
 Broker --> Client: PUBACK 0x00
 Broker --> Client: PUBACK 0x00
 Client -> Broker: PUBLISH('$file/8568BA42-../fin/3075/{sha256}')
 Broker -> Broker: verify checksum - ok
-Broker -> Broker: finalize /client/ml-logs/data.log
-Broker -> Storage: upload /client/ml-logs/data.log
+Broker -> Broker: finalize logs/data-log
+Broker -> Storage: upload logs/data-log
 Storage --> Broker: upload ok
 Broker --> Client: PUBACK 0x00
 Broker --> Broker: cleanup
