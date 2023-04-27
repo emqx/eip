@@ -6,7 +6,7 @@
 
 ## Abstract
 
-This documents defines protocol to send files from MQTT clients to MQTT server. It is using only PUBLISH and PUBACK messages and does not require MQTT 5.0 features like topic aliases.
+This document defines protocol to send files from MQTT clients to MQTT server. It is using only `PUBLISH` and `PUBACK` messages and does not require MQTT 5.0 features like topic aliases.
 
 ## Motivation
 
@@ -14,7 +14,7 @@ EMQX customers are asking for file transfer functionality from IoT devices to th
 
 * FTP and HTTP servers usually struggle to keep up with large number of simultaneous bandwidth-intensive connections
 * packet loss or reconnect forces clients to restart the transfer
-* devices which already talk MQTT need to integrate with one more SDK, address authenticaion and authorization, and potentially go through an additional round of security audit
+* devices which already talk MQTT need to integrate with one more SDK, address authentication and authorization, and potentially go through an additional round of security audit
 
 Known cases of device-to-cloud file transfer:
 
@@ -34,7 +34,7 @@ Even though devices could already send binary data in MQTT packets, it is not tr
 
 ## Terminology
 
-The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [BCP 14](https://www.rfc-editor.org/bcp/bcp14) [[RFC2119](https://www.rfc-editor.org/rfc/rfc2119)] [[RFC8174](https://www.rfc-editor.org/rfc/rfc8174)] when, and only when, they appear in all capitals, as shown here.
+The keywords "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [BCP 14](https://www.rfc-editor.org/bcp/bcp14) [[RFC2119](https://www.rfc-editor.org/rfc/rfc2119)] [[RFC8174](https://www.rfc-editor.org/rfc/rfc8174)] when, and only when, they appear in all capitals, as shown here.
 
 The following terms are used as described in [MQTT Version 5.0 Specification](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html):
 * Application Message
@@ -70,41 +70,95 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
 ### Overview
 
 * Files are split in segments, segments can be of arbitrary length
-* Client MUST generate UUID according to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122) for each file being transferred and use it as file Id in Topic Name
-* Broker MUST validate that provided UUID conforms to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122)
+* Client SHOULD generate unique identifier for each file being transferred and use it as `fileId` in Topic Name (UUID according to [RFC 4122](https://www.rfc-editor.org/rfc/rfc4122) is recommended)
+* Client SHOULD consider `fileId` as a unique identifier for the file transfer, and MUST NOT reuse it for other file transfers
+* Broker SHOULD consider `clientId` + `fileId` pair as a Broker-wide unique identifier for the file transfer
 * Client MAY calculate SHA-256 checksum of the segment it's about to send and send it as part of Topic Name
 * Client MAY calculate SHA-256 checksum of the file it's about to send and include it in the `init` message payload or send is as part of the `fin` message
 * If Client chooses to provide checksum for file segments, whole file, or both, it MUST use [SHA-256](https://www.rfc-editor.org/rfc/rfc6234)
-* If checksum is included in the `init` message payload, the Broker MUST use it to verify integrity of the file after receving the `fin` message for the corresponding file transfer
+* If checksum is included in the `init` message payload, the Broker MUST use it to verify integrity of the file after receiving the `fin` message for the corresponding file transfer
 * If checksum is included in topic name, Broker MUST use it to verify integrity of corresponding data:
   * segment, if it's a segment transfer message
   * whole file, if it's a `fin` message
 * If checksum verification fails, Broker MUST reject the corresponding data
-* Client MUST use $file Topic to transfer files
-* Broker MUST NOT let clients subscribe to $file topics
+* Client MUST use Topic starting with `$file/` to transfer files
+* Broker MUST NOT let clients subscribe to Topics starting with `$file/` topics
 * Segment length can be calculated on the server side by subtracting the length of the [Variable Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901025) from the [Remaining Length](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901105) field that is in the [Fixed Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901021)
-* Data is transferred in PUBLISH packets in the following order:
-  1. $file/{fileId}/init
-  2. $file/{fileId}/{offset}[/{checksum}]
-  3. $file/{fileId}/{offset}[/{checksum}]
-  4. ...
-  3. $file/{fileId}/[fin[/{checksum}] | abort]
+
+### Protocol flow
+
+Data is transferred in PUBLISH packets in the following order:
+
+1. `$file/{fileId}/init`
+
+    ```
+    {
+      "name": "ml-logs-data.log",
+      "size": 12345,
+      "checksum": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      "expire_at": 1696659943,
+      "segments_ttl": 600
+    }
+    ```
+
+2. `$file/{fileId}/{offset}[/{checksum}]`
+
+    ```
+    <file segment data>
+    ```
+
+3. `$file/{fileId}/{offset}[/{checksum}]`
+
+    ```
+    <file segment data>
+    ```
+
+4. ...
+
+5. `$file/{fileId}/[fin/{fileSize}[/{checksum}] | abort]`
+
+    No payload
 
 #### `$file/{fileId}/init` message
 
-Initialize the file transfer. Server is expected to store metadata from the payload in the session along with `{fileId}` as a reference for the rest of file metadata.
+Initialize the file transfer. Server is expected to store metadata from the payload in the session along with `{fileId}` as a reference for the rest of file transfer.
 
   * Qos=1
   * Payload Format Indicator=0x01
   * `{fileId}` is corresponding file UUID
   * Payload is a JSON document
 
+Getting a successful `PUBACK` from the Broker means that the file transfer has been initialized successfully, and the metadata has been persisted in the storage.
+
+Broker MAY refuse to accept the file transfer in case of the metadata conflict, e.g. if the transfer with the same `{fileId}` from the same Client has different `name` or `checksum` value. Client is expected to start the transfer with a different `{fileId}`.
+
+Broker MAY abort incomplete file transfers after their respective sessions have been discarded, and clean up any resources associated with them.
+
+Broker MAY refuse the file transfer if the `fileId` is too long, but generally `fileId`s of up to 255 bytes (in UTF-8 encoding) should be safe to use.
+
 ##### `init` payload JSON Schema
 
 Available [here](https://github.com/emqx/mqtt-file-transfer-schema/blob/v1.0.0/init.json).
 
+* Broker MAY use `name` value as a filename in a file system
+
+    This generally means that it SHOULD NOT contain path separators, and SHOULD NOT contain characters or sequences
+    of characters that are not allowed in filenames in the file system where the file is going to be stored. Also,
+    the filename SHOULD be limited to 255 bytes (in UTF-8 encoding).
+
+* Broker SHOULD consider `size` value as informational only, given it's not required to be provided by the client
+
+    Mandatory file size should be specified in the `fin` message Topic anyway, and may be different from the value
+    provided in the `size` field. The `size` field may be used for example to calculate the progress of the transfer,
+    which thus may be inaccurate.
+
 * Broker SHOULD have default setting for `segments_ttl`
+
 * Broker MAY delete segments of unfinished file transfers when their TTL has expired
+
+* Broker MAY NOT honor `segments_ttl` value that is either too large or too small
+
+    What means _too large_ or _too small_ is up to the Broker implementation and/or configuration.
 
 #### `$file/{fileId}/{offset}[/{checksum}]` message
 
@@ -116,7 +170,9 @@ One such message for each file segment.
   * `{offset}` is byte offset of the given segment
   * optional `{checksum}` is SHA-256 checksum of the file segment
 
-#### `$file/{fileId}/fin[/{checksum}]` message
+Getting a successful `PUBACK` from the Broker means that the file segment has been verified (if checksum was provided) and successfully persisted in the storage.
+
+#### `$file/{fileId}/fin/{fileSize}[/{checksum}]` message
 
 All file segments have been successfully transferred.
 
@@ -124,12 +180,27 @@ All file segments have been successfully transferred.
   * no payload
   * optional `{checksum}` is SHA-256 checksum of the file
 
+Getting a successful `PUBACK` from the Broker means that the file being transferred is ready to be used. This implies a lot of things:
+  * Broker has verified that it has corresponding metadata for the file
+  * Broker has verified that it has all the segments of the file up to `{fileSize}` persisted in the storage
+  * Broker has verified the file integrity (if checksum was provided)
+  * Broker has published the file along with its metadata to the location where it can be accessed by other users
+
+In cases when checksum was provided both in the `init` message and in the `fin` message, Broker MUST ignore the former and use the latter.
+
+Clients MUST expect that handling of the `fin` message may take considerable time, depending on the file size and the
+Broker implementation or configuration.
+
 #### `$file/{fileId}/abort` message
 
 Client wants to abort the transfer.
 
   * Qos=1
   * no payload
+
+### Durability
+
+This specification does not define how reliably the file transfer data SHOULD be persisted. It is up to the Broker implementation what specific durability guarantees it provides (e.g. datasync or replication factor). However, Broker is expected to support transfers that are interrupted by a network failure, Broker restart, or Client reconnect.
 
 ### PUBACK Reason codes
 
@@ -148,7 +219,7 @@ Client is expected to wait before trying to retransmit file segment again.
 
 ### PUBACK from MQTT servers < v5.0
 
-PUBACK messages prior to MQTT v5.0 do not carry Reason code, it's up to the Client to decide if, when and how to retry.
+`PUBACK` messages prior to MQTT v5.0 do not carry Reason code, it's up to the Client to decide if, when and how to retry.
 
 ### Happy path
 
@@ -175,7 +246,7 @@ Full backward compatibility with MQTT 5.x and MQTT 3.x.
 * QUIC pure binary stream support
 * ACL enables client-side control of file size
 * Bulk upload at EMQX
-* Multi-node local cache utilization similar to hdfs
+* Multi-node local cache utilization similar to HDFS
 * Cheaper (in computational costs) checksum algorithm
 * Server-to-client file transfer protocol
 
