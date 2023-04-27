@@ -186,6 +186,8 @@ Getting a successful `PUBACK` from the Broker means that the file being transfer
   * Broker has verified the file integrity (if checksum was provided)
   * Broker has published the file along with its metadata to the location where it can be accessed by other users
 
+In cases when checksum was provided both in the `init` message and in the `fin` message, Broker MUST ignore the former and use the latter.
+
 Clients MUST expect that handling of the `fin` message may take considerable time, depending on the file size and the
 Broker implementation or configuration.
 
