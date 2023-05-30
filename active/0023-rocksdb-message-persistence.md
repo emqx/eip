@@ -1,4 +1,4 @@
-# MQTT message persistence with an embedded database (RocksDB)
+# MQTT message and session persistence with an embedded database (RocksDB)
 
 ## Changelog
 
@@ -13,6 +13,9 @@ EMQX community edition (up to version 4) fulfilled this promise as long as all b
 Enterprise edition allowed to store the offline messages in a external database.
 
 ## Motivation
+
+Basic setup of EMQX router keeps messages in RAM, which guarantees low latency and high throughput, however its message delivery guarantees have some limitations. Specifically, if the broker nodes go offline, the messages kept in memory would be lost. This could potentially cause message loss for clients.
+To address this issue and improve reliability, the EMQX team is working on implementing message persistence using an embedded database, RocksDB. This feature will store messages even when broker nodes are offline, thereby ensuring message delivery.
 
 This feature will improve message delivery guarantees of EMQX broker and make it ready for the new markets that require such guarantees.
 
@@ -56,7 +59,6 @@ Same goes for the desirable properties of work stealing.
 ### Sharding
 
 Sharding is absolutely necessary to achieve the throughput matching the competition.
-
 
 There are several sharding strategies.
 
@@ -311,6 +313,8 @@ Each layer can be tested separately.
 
 ### Storage layer
 
+This layer will use RocksDB, an embedded database, to store messages on each broker node. RocksDB provides fast inserts and compactions to minimize storage space. It also allows setting TTLs to automatically delete old data based on the EMQX retention policy.
+
 At the very least it must provide the following APIs:
 
 ```erlang
@@ -330,16 +334,11 @@ as well as callbacks for the replication layer.
 
 ### Replication layer
 
-TBD
+To handle node failures, EMQX will replicate message data across nodes. It will map physical broker nodes to virtual nodes or “vnodes.” Each vnode owns a shard of the total data. If a physical node goes down, other nodes can take over its vnodes. This layer handles the redundancy and failover logic.
 
 ### Logical layer
 
-Logical layer hides the distributed and sharded nature of the message storage.
-It also maintains and persists session information.
-
-### Connectivity layer
-
-TBD
+The logical layer will provide a simple API to store and retrieve messages, hiding the complexity of the storage and replication layers. Code interfacing with message persistence storage will call the logical layer API, which will then coordinate across the lower layers as needed. This abstraction makes the feature easy to integrate into the EMQX broker, and to swap message storage backends if needed. When a client wants to replay messages, the logical layer will retrieve them from the underlying database and forward them to the client.
 
 ## Configuration Changes
 
