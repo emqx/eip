@@ -163,11 +163,11 @@ Annotations (or edoc tags) can be used to specify the API functions:
 ```erlang
 -module(foo_api).
 
--intruduced_in({foo/3, {5,0,0}}).
+-introduced_in({foo/3, {5,0,0}}).
 foo(A, B, C) ->
     rpc:call(foo_api_impl, foo, [A, B, C]).
 
--intruduced_in({bar/3, {5,0,0}}).
+-introduced_in({bar/3, {5,0,0}}).
 -deprecated_in({bar/3, {5,1,0}}).
 foo(A, B, C) ->
     rpc:call(foo_api_impl, bar, [A, B, C]).
