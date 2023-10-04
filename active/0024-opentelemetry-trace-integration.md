@@ -1,5 +1,11 @@
 # OpenTelemetry Traces Integration
 
+## Changelog
+- 2023-09-28: Initial draft
+- 2023-10-04:
+  - Apply review remarks (define trace spans for the first iterations)
+  - Add description of `emx_external_trace` behaviour
+
 ## Abstract
 
 This document describes EMQX OpenTelemetry integration design proposal.
@@ -29,21 +35,16 @@ HTTP client after receiving the response may proceed executing some subsequent o
 Somewhat analogously, EMQX instrumented with OpenTelemetry, is expected to receive a published message, extract trace context (e.g., `traceparent`, `tracestate` User-Properties), and trace some/all processing steps under the same trace ID.
 Producer/consumer of the message may proceed tracing any subsequent operations relating them to the same trace ID.
 
-These traced steps (or spans) should include the following (**TBD**):
+These traced steps (or spans) should include the following (in the first iteration):
 
-- Publish message (traced by a node that received a published message)
+- Process a published message (traced by a node that received a published message).
+  This span starts when PUBLISH packet is received and parsed by a connection process and ends when the message is dispatched to local subscribers and/or forwarded to other nodes (forwarding is async by default).
+- Send a published message to a subscriber (traced by all nodes that have matched subscribers).
+  This span is traced by each connection process (so there will be one span per each subscriber). It will be started when 'deliver` message is received by a connection controlling process and ended when outgoing packet is serialized and sent to the socket port.
 
-  - Send message to data bridges (traced by a node that received a published message)
-  
-    NOTE: if the external data system and/or communication protocol supports OpenTelemetry distributed tracing, trace context must be also propagated to it. EMQX bridge app should implement a function to inject the trace context into its own message. For example, the web-hook bridge should add `traceparent` / `tracestate` HTTP headers, so that the receiving end can continue tracing under the same trace ID.
+NOTE: the above list may be extended/changed in the next iterations.
 
-  - Route message (traced by a node that received a published message)
-
-    - Dispatch message (traced by all nodes that have matched subscribers)
-
-      - Deliver/send message to a subscriber (traced by all nodes that have matched subscribers)
-
-NOTE: the above list may be extended/changed, for now it follows the product requirements.
+![An actual EMQX trace example as exported by POC implementation](0024-assets/trace-export-example.png)
 
 Any other processing steps/events like client connection, authentication, subscription are currently not considered for OpenTelemetry tracing (**TBD**) due to the following reasons:
 
@@ -68,18 +69,6 @@ That’s why the proposed implementation mostly relies on propagating the tracin
 API and context propagation examples (see: [full draft implementation](https://github.com/emqx/emqx/pull/11696/files#diff-a0fac912929fe4c3aa6b99a65a070f1886f75b2586beb4a7e21d8329be9aaa32)):
 
 ```erlang
--spec trace_publish(Msg, fun((Msg) -> Res)) -> Res when
-    Msg :: emqx_types:message(),
-    Res :: emqx_types:publish_result().
-trace_publish(Msg, PublishFun) ->
-    ...
-
--spec trace_dispatch(Topic, Msg, fun((Topic, Msg) -> Res)) -> Res when
-    Topic :: emqx_types:topic(),
-    Msg :: emqx_types:message(),
-    Res :: emqx_types:deliver_result().
-trace_dispatch(Topic, Msg, DispatchFun) ->
-   ...
 
 put_ctx_to_msg(OtelCtx, Msg = #message{extra = Extra}) when is_map(Extra) ->
     Msg#message{extra = Extra#{?EMQX_OTEL_CTX => OtelCtx}};
@@ -105,7 +94,70 @@ Some drawbacks of the proposed implementation should also be mentioned:
 
 - internal tracing API (as of now, implemented in `emqx_otel_trace` module) is not decoupled from the rest of the code base: each traceable action (span) is traced by a specific function and all these functions are quite specific. For example, they may extract/propagate the context differently and/or rely on the previous (parent) span. For now, it doesn’t seem feasible to create a generic trace wrapper that can trace an arbitrary function.
 
-![An actual EMQX trace example as exported by POC implementation](0024-assets/trace-export-example.png)
+#### emqx_external_trace behaviour
+
+Most (currently all) trace spans are expected to be added to the core `emqx` OTP application. However, `emqx` application mustn't depend on `opentelemetry` libs/apps.
+Moreover, we already have `emqx_opentelemetry` OTP application that implements OpenTelementry metrics, schema, configuration, etc.
+In order to keep `emqx` application decoupled from `opentelemetry` specific code, it's proposed to introduce `emqx_external_trace` module in `emqx` application.
+The module will include necessary callbacks that an actual trace backend must implement. It will also implement `register_provider/1`, `unregister_provider/1` functions, so that `opentelemetry` backend trace module can register itself as a trace provider.
+
+`apps/emqx/src/emqx_external_trace.erl`:
+```erlang
+-module(emqx_external_trace).
+
+-callback trace_process_publish(Packet, Channel, fun((Packet, Channel) -> Res)) -> Res when
+    Packet :: emqx_types:packet(),
+    Channel :: emqx_channel:channel(),
+    Res :: term().
+
+...
+
+-define(PROVIDER, {?MODULE, trace_provider}).
+
+-define(with_provider(IfRegisitered, IfNotRegisired),
+    case persistent_term:get(?PROVIDER, undefined) of
+        undefined ->
+            IfNotRegisired;
+        Provider ->
+            Provider:IfRegisitered
+    end
+).
+
+%%--------------------------------------------------------------------
+%% provider API
+%%--------------------------------------------------------------------
+
+-spec register_provider(module()) -> ok | {error, term()}.
+register_provider(Module) when is_atom(Module) ->
+    case is_valid_provider(Module) of
+        true ->
+            persistent_term:put(?PROVIDER, Module);
+        false ->
+            {error, invalid_provider}
+    end.
+
+-spec unregister_provider(module()) -> ok | {error, term()}.
+unregister_provider(Module) ->
+    case persistent_term:get(?PROVIDER, undefined) of
+        Module ->
+            persistent_term:erase(?PROVIDER),
+            ok;
+        _ ->
+            {error, not_registered}
+    end.
+
+%%--------------------------------------------------------------------
+%% trace API
+%%--------------------------------------------------------------------
+
+-spec trace_process_publish(Packet, Channel, fun((Packet, Channel) -> Res)) -> Res when
+    Packet :: emqx_types:packet(),
+    Channel :: emqx_channel:channel(),
+    Res :: term().
+trace_process_publish(Packet, Channel, ProcessFun) ->
+    ?with_provider(?FUNCTION_NAME(Packet, Channel, ProcessFun), ProcessFun(Packet, Channel)).
+
+```
 
 ### External trace context propagation
 
@@ -128,7 +180,7 @@ However, if no trace context received but a message still should be traced, one 
 - create internal trace context and trace only internal EMQX events and do not propagate the context to receivers and/or external data systems (if bridges are set up)
 - create internal trace context and propagate it to receivers and/or external data systems.
 
-The option can be made configurable and should probably default to not propagating internally created trace context (**TBD**). 
+The option can be made configurable and should probably default to not propagating internally created trace context (**TBD**).
 
 ### Attributes (TBD)
 
@@ -196,7 +248,7 @@ opentelemetry {
     filters {}
     sampling {}
     # whether to propagate trace context
-    # if it was internally created by EMQX and not received in a publishedd message:
+    # if it was internally created by EMQX and not received in a published message:
     downstream_context_propagation = false
     # select a list of attributes to be added to trace spans from the pre-defined list
     attributes = []
