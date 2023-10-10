@@ -1,0 +1,13 @@
+@startuml flow-sync-2
+!theme blueprint
+Client -> Broker: PUBLISH(pktid=1, topic=$file/[COMMAND])
+note right
+Operation start
+end note
+Client -> Broker: PUBLISH(pktid=2, topic=...)
+Broker --> Client: PUBACK(pktid=2, rc=...)
+Broker --> Client: PUBACK(pktid=1, rc=0)
+note right
+Operation end
+end note
+@enduml
