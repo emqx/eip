@@ -1,0 +1,23 @@
+@startuml flow-async-1
+!theme blueprint
+Client -> Broker: PUBLISH(pktid=1, topic=$file-async/[COMMAND])
+Broker --> Client: PUBACK(pktid=1, rc=0)
+note right
+Operation start
+end note
+Client -> Broker: PUBLISH(pktid=2, topic=...)
+Broker --> Client: PUBACK(pktid=2, rc=...)
+Broker -> "$file-response/{clientId}": PUBLISH $file-response/{clientId}
+note left
+Operation end
+end note
+note right
+{
+  "vsn": "0.1",
+  "topic": "$file-async/[COMMAND]",
+  "packet_id": 1,
+  "reason_code": 0,
+  "reason_description": "success"
+}
+end note
+@enduml

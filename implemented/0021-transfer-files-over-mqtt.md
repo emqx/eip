@@ -81,15 +81,15 @@ As an example of existing implementation we can look at AWS IoT Core [which prov
   * segment, if it's a segment transfer message
   * whole file, if it's a `fin` message
 * If checksum verification fails, Broker MUST reject the corresponding data
-* Client MUST use Topic starting with `$file/` to transfer files
-* Broker MUST NOT let clients subscribe to Topics starting with `$file/` topics
+* Client MUST use Topic starting with `$file/`(`$file-async/`) to transfer files.
+* Broker MUST NOT let clients subscribe to Topics starting with `$file/`(`$file-async/`) topics
 * Segment length can be calculated on the server side by subtracting the length of the [Variable Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901025) from the [Remaining Length](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901105) field that is in the [Fixed Header](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901021)
 
 ### Protocol flow
 
 Data is transferred in PUBLISH packets in the following order:
 
-1. `$file/{fileId}/init`
+1. `$file[-async]/{fileId}/init`
 
     ```
     {
@@ -101,13 +101,13 @@ Data is transferred in PUBLISH packets in the following order:
     }
     ```
 
-2. `$file/{fileId}/{offset}[/{checksum}]`
+2. `$file[-async]/{fileId}/{offset}[/{checksum}]`
 
     ```
     <file segment data>
     ```
 
-3. `$file/{fileId}/{offset}[/{checksum}]`
+3. `$file[-async]/{fileId}/{offset}[/{checksum}]`
 
     ```
     <file segment data>
@@ -115,11 +115,72 @@ Data is transferred in PUBLISH packets in the following order:
 
 4. ...
 
-5. `$file/{fileId}/[fin/{fileSize}[/{checksum}] | abort]`
+5. `$file[-async]/{fileId}/[fin/{fileSize}[/{checksum}] | abort]`
 
     No payload
 
-#### `$file/{fileId}/init` message
+
+### Sync mode vs Async mode
+
+File transfer individual commands may be handled in two modes: synchronous and asynchronous. The mode is chosen by the client, by sending commands either to `$file/...` (sync mode) or `$file-async/...` (async mode) topics.
+
+Client is free to mix arbitrarily sync and async commands in the same file transfer session.
+
+#### Synchronous mode
+
+In synchronous mode, the successful/unsuccessful status of individual operations is communicated to the client via Reason Code field of MQTT `PUBACK` messages. See [Reason codes](#reason-codes) for details.
+
+![](./0021-assets/flow-sync-1.png)
+
+Caveats:
+
+* Some operations (`fin` command) may take considerable time to complete. So if a client wants to utilize the session while waiting for the result, it should either use async mode or implement some kind of asynchronous logic itself, that is to deal with several unacked PUBLISH messages in parallel, like this:
+
+![](./0021-assets/flow-sync-2.png)
+* MQTTv3 clients do not support reason codes, so async mode is the preferred option for them.
+
+#### Asynchronous mode
+
+In asynchronous mode, the logic of command handling is the following:
+* Client sends a command to `$file-async/...` topic.
+* Broker responds with `PUBACK`. Nonzero Reason Code indicates immediate failure.
+* Zero Reason Code indicates that the command has been accepted for processing. The client is expected to wait for the actual result of the command via `$file-response/{clientId}` topic.
+
+![](./0021-assets/flow-async-1.png)
+
+The result of the command is a JSON document with the following fields:
+```json
+{
+  "vsn": "0.1",
+  "topic": "$file-async/[COMMAND]",
+  "packet_id": 1,
+  "reason_code": 0,
+  "reason_description": "success"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `vsn`  | response document format version |
+| `topic`  | the topic of the command that the response is for, e.g. `$file-async/somefileid/init` |
+| `packet_id`  | the MQTT packet id of the command packet (`PUBLISH`) that the response is for |
+| `reason_code`  | the result code of the command execution. See [Reason Codes](#reason-codes) for details |
+| `reason_description`  | the human-readable description of the Reason Code |
+
+JSON Schema is available [here](https://github.com/emqx/mqtt-file-transfer-schema/blob/v1.1.0/response.json).
+
+Notes:
+* The operation result is always sent to the response topic (both in case of immediate failure and in case of actual processing). So the response topic may be used as the only source of information about the operation result. Also, this is the only variant available for MQTTv3 clients.
+* The response topic is client-specific. The client should subscribe to it before sending the command.
+* The client may override the response topic using `REQUEST/RESPONSE` ![pattern](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901253).
+
+#### Reason Codes
+
+In the subsequent sections, the _reason code_ of a file transfer operation means the _final_ reason code of the command execution, that is, the Reason Code of `PUBACK` packet in the sync mode or the `reason_code` response document field value in the async mode.
+
+### Protocol messages
+
+#### `$file[-async]/{fileId}/init` message
 
 Initialize the file transfer. Server is expected to store metadata from the payload in the session along with `{fileId}` as a reference for the rest of file transfer.
 
@@ -128,7 +189,7 @@ Initialize the file transfer. Server is expected to store metadata from the payl
   * `{fileId}` is corresponding file UUID
   * Payload is a JSON document
 
-Getting a successful `PUBACK` from the Broker means that the file transfer has been initialized successfully, and the metadata has been persisted in the storage.
+Getting a successful reason code from the broker means that the file transfer has been initialized successfully, and the metadata has been persisted in the storage.
 
 Broker MAY refuse to accept the file transfer in case of the metadata conflict, e.g. if the transfer with the same `{fileId}` from the same Client has different `name` or `checksum` value. Client is expected to start the transfer with a different `{fileId}`.
 
@@ -138,7 +199,7 @@ Broker MAY refuse the file transfer if the `fileId` is too long, but generally `
 
 ##### `init` payload JSON Schema
 
-Available [here](https://github.com/emqx/mqtt-file-transfer-schema/blob/v1.0.0/init.json).
+Available [here](https://github.com/emqx/mqtt-file-transfer-schema/blob/v1.1.0/init.json).
 
 * Broker MAY use `name` value as a filename in a file system
 
@@ -160,7 +221,7 @@ Available [here](https://github.com/emqx/mqtt-file-transfer-schema/blob/v1.0.0/i
 
     What means _too large_ or _too small_ is up to the Broker implementation and/or configuration.
 
-#### `$file/{fileId}/{offset}[/{checksum}]` message
+#### `$file[-async]/{fileId}/{offset}[/{checksum}]` message
 
 One such message for each file segment.
 
@@ -170,7 +231,7 @@ One such message for each file segment.
   * `{offset}` is byte offset of the given segment
   * optional `{checksum}` is SHA-256 checksum of the file segment
 
-Getting a successful `PUBACK` from the Broker means that the file segment has been verified (if checksum was provided) and successfully persisted in the storage.
+Getting a successful reason code from the Broker means that the file segment has been verified (if checksum was provided) and successfully persisted in the storage.
 
 #### `$file/{fileId}/fin/{fileSize}[/{checksum}]` message
 
@@ -180,7 +241,7 @@ All file segments have been successfully transferred.
   * no payload
   * optional `{checksum}` is SHA-256 checksum of the file
 
-Getting a successful `PUBACK` from the Broker means that the file being transferred is ready to be used. This implies a lot of things:
+Getting a successful reason code from the Broker means that the file being transferred is ready to be used. This implies a lot of things:
   * Broker has verified that it has corresponding metadata for the file
   * Broker has verified that it has all the segments of the file up to `{fileSize}` persisted in the storage
   * Broker has verified the file integrity (if checksum was provided)
@@ -202,7 +263,7 @@ Client wants to abort the transfer.
 
 This specification does not define how reliably the file transfer data SHOULD be persisted. It is up to the Broker implementation what specific durability guarantees it provides (e.g. datasync or replication factor). However, Broker is expected to support transfers that are interrupted by a network failure, Broker restart, or Client reconnect.
 
-### PUBACK Reason codes
+### Reason codes
 
 | Reason code | MQTT Name                     | Meaning in file transfer context                    |
 |-------------|-------------------------------|-----------------------------------------------------|
@@ -219,7 +280,7 @@ Client is expected to wait before trying to retransmit file segment again.
 
 ### PUBACK from MQTT servers < v5.0
 
-`PUBACK` messages prior to MQTT v5.0 do not carry Reason code, it's up to the Client to decide if, when and how to retry.
+`PUBACK` messages prior to MQTT v5.0 do not carry Reason Code, so the only way for the client to know the result of the operation is to use async mode and wait for the response on the response topic.
 
 ### Happy path
 
