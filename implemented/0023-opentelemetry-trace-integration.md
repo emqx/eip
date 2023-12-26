@@ -46,7 +46,7 @@ These traced steps (or spans) should include the following (in the first iterati
 
 NOTE: the above list may be extended/changed in the next iterations.
 
-![An actual EMQX trace example as exported by POC implementation](0024-assets/trace-export-example.png)
+![An actual EMQX trace example as exported by POC implementation](0023-assets/trace-export-example.png)
 
 Any other processing steps/events like client connection, authentication, subscription are currently not considered for OpenTelemetry tracing due to the following reasons:
 
