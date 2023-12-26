@@ -5,6 +5,8 @@
 - 2023-10-04:
   - Apply review remarks (define trace spans for the first iterations)
   - Add description of `emx_external_trace` behaviour
+- 2023-12-26:
+  - Update the document to match the actual implementation and move to implemented
 
 ## Abstract
 
@@ -46,7 +48,7 @@ NOTE: the above list may be extended/changed in the next iterations.
 
 ![An actual EMQX trace example as exported by POC implementation](0024-assets/trace-export-example.png)
 
-Any other processing steps/events like client connection, authentication, subscription are currently not considered for OpenTelemetry tracing (**TBD**) due to the following reasons:
+Any other processing steps/events like client connection, authentication, subscription are currently not considered for OpenTelemetry tracing due to the following reasons:
 
 - these actions are not directly associated with the main traceable entity (message) defined above
 - these actions seem not absolutely suitable for distributed tracing, they can be probably traced only as internal EMQX events
@@ -66,7 +68,7 @@ That’s why the proposed implementation mostly relies on propagating the tracin
 - inter-cluster communication doesn’t require any changes to support trace context propagation and is backward compatible (trace context is added to a reserved `#emqx_message.extra` field)
 - tracing individual messages processed in batches is possible and doesn’t require any significant changes in the current implementation.
 
-API and context propagation examples (see: [full draft implementation](https://github.com/emqx/emqx/pull/11696/files#diff-a0fac912929fe4c3aa6b99a65a070f1886f75b2586beb4a7e21d8329be9aaa32)):
+API and context propagation examples (see: [full implementation](https://github.com/emqx/emqx/pull/11984/files#diff-73384b930f330bcf64fb285a0bbcdce0edd015f6c7598e847da49d46b878ebe4):
 
 ```erlang
 
@@ -180,9 +182,9 @@ However, if no trace context received but a message still should be traced, one 
 - create internal trace context and trace only internal EMQX events and do not propagate the context to receivers and/or external data systems (if bridges are set up)
 - create internal trace context and propagate it to receivers and/or external data systems.
 
-The option can be made configurable and should probably default to not propagating internally created trace context (**TBD**).
+The option shall be configurable and default to not propagating internally created trace context (controlled via `opentelementry.traces.filter.trace_all` configuration parameter).
 
-### Attributes (TBD)
+### Attributes
 
 OpenTelemetry defines [some conventions](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/messaging/messaging-spans.md#messaging-attributes) (status: Experimental at the time of writing this document).
 
@@ -192,8 +194,8 @@ The attributes are grouped under several name-spaces:
 - `network.*`
 - `server.*`
 
-It should be  decided whether to follow these conventions strictly or define our own (e.g. mqtt.topic, mqtt.clientid etc).
-Another open question is whether to always include all the attributes or make them configurable, so that a user may select appropriate ones from the pre-defined list.
+The implementation shall follow these conventions, but as of now, only a small subset of attributes are added.
+The attributes can be extended in future upon request.
 
 ### Sampling
 
@@ -203,12 +205,14 @@ Erlang opentelemetry lib implements only head sampling. Head sampling implies th
 
 Sampling rate option should be added to EMQX configuration.
 
-Tail sampling that makes a sampling decision after all the spans are done would need to be implemented by extending opentelemetry lib (**TBD**).
+Tail sampling that makes a sampling decision after all the spans are done would need to be implemented by extending opentelemetry lib.
 
 Examples of tail sampling capabilities:
 
 - sample traces based on their latency (e.g. sample only traces that take more than 5ms)
 - sample traces only if they contain an error, a specific event or attribute value
+
+The first iteration of EMQX OpenTelemetry integration doesn't implement any sampling. This feature can be considered for development in the next EMQX releases.
 
 ### Filtering
 
@@ -226,6 +230,9 @@ The filters may be similar to ones used in EMQX tracing:
 
 The filtering rule should not probably be too complex to minimize performance impact.
 
+The first iteration of EMQX OpenTelemetry integration defines only one boolean filter: `trace_all`. If it is enabled, all published messages are traced, and a new trace ID is generated if it can't be extracted from the message.
+Otherwise, only messages published with trace context are traced.
+
 ## Configuration Changes
 
 The existing EMQX OpenTelemetry schema (defined in emqx_otel_schema module) must be extended to include trace specific configuration.
@@ -242,16 +249,10 @@ Suggested HOCON config example:
 ```
 opentelemetry {
   metrics {enable = true} # must be backward-compatible with opentelemetry.enable
-  exporter {endpoint = "http://172.18.0.2:4317", interval = 10s}
+  exporter {endpoint = "http://172.18.0.2:4317"}
   trace {
     enable = true
-    filters {}
-    sampling {}
-    # whether to propagate trace context
-    # if it was internally created by EMQX and not received in a published message:
-    downstream_context_propagation = false
-    # select a list of attributes to be added to trace spans from the pre-defined list
-    attributes = []
+    filter {}
     ...
     }
 }
