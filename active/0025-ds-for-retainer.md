@@ -3,6 +3,7 @@
 ## Changelog
 
 * 2024-01-18: @savonarola Initial draft
+* 2024-01-22: @savonarola Add more optimizations for the "straightforward approach with optimizations"; declare it as the chosen one
 
 ## Abstract
 
@@ -33,18 +34,6 @@ The straightforward approach is to use just the same DS as for the regular messa
 * append (`store_batch`) retained messages into the DB;
 * interpret empty bodies as tombstones;
 * on message lookup, calculate streams and immediately fold them to reduce each topic to the last message.
-
-An obvious optimization is to have slightly different key schemas for the LTS storage of retained messages storage implementation — not
-```
-ts_epoch | lts_index_bits | ts_rest | message_id => message
-```
-
-but just
-
-```
-lts_index_bits | topic => message
-```
-to have generation automatically "compacted".
 
 #### Possible callback implementation
 
@@ -83,6 +72,33 @@ The retainer must provide the following callbacks:
 * The same is true for the `size` callback.
 * The same is true for the `match_messages` callback. However, _currently_ we admit that the whole set of retained messages for a subscription is small enough to fit into memory.
 
+### Straightforward approach with optimizations
+
+An obvious optimization is to have slightly different key schemas for the LTS storage of retained messages storage implementation — not
+```
+ts_epoch | lts_index_bits | ts_rest | message_id => message
+```
+
+but just
+
+```
+lts_index_bits | topic => message
+```
+
+to have generation automatically "compacted".
+
+Other optimizations:
+* We do not use generations for retained messages.
+* We implement alternative sharding based on the topic, not on the client id/node id.
+* To simplify replay, we may encapsulate streams for different shards into a single iterator.
+
+Thus each topic is stored uiquely in the storage, and we do not need to fold over all topics to implement `page_read` and `size` callbacks.
+
+With this approach, we may implement `match_messages` callback without folding, in constant space.
+We use iterator state as `context()`.
+
+`page_read` may be implemented in the same manner, however, we need to "scroll" the iterator to the required page.
+
 ### Topic indexing approach
 
 The alternative approach is that we use the DS only for _topic indexing_. That is, we store not
@@ -116,14 +132,10 @@ of the retainer.
 
 We may create completely standalone storage for retained messages, not using high-level DS at all, but using only low-level DS primitives, like LTS tries and bitfield mappers.
 
-### Problems of any approach using DS
-
-* Since we need to "compact" or "fold" the messages, sending only the last one to the client, we need an additional component — "stream replayer", which is currently private to the message persistence core.
-* Unlike usual replay, it seems there is no way to replay retained messages in constant memory since we need to reduce by topic, and the number of topics is not limited.
-
 ### Conclusion
 
-We need to choose the approach, either between the proposed ones or some other one.
+We choose the straightforward approach with optimizations.
+It allows us to reuse the existing DS implementations and abstractions. Also, with this approach, we may implement all the operations in constant space, which will be a significant improvement over the current implementation.
 
 ## Configuration Changes
 
@@ -168,4 +180,6 @@ No backwards compatibility issues are expected. Retainer configs having old `bac
 
 ## Declined Alternatives
 
+* Straightforward approach (without optimizations).
+* Topic-only indexing approach.
 
