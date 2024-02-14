@@ -54,13 +54,18 @@ The common parts can be described as hocon config below:
 ### Message Validation
 
 ```
-validation1 {
+validations = [
+  {
+    name = validation1
+    tags = []
+    description = ""
     enable = true # or 'false'
     type = validation
     description = "drop message if it is not compabitble with my avro schema or if payload.value is less tha 0"
     topics = "t/#" # or topics = ["t/1", "t/2"]
-    check_mode = any_pass # or all_pass
+    strategy = any_pass # or all_pass
     failure_action = disconnect # (disconnect also implies 'dorp') or 'drop' to only drop the message
+    log_failure_at = none # debug, notice, info, warning, error
     checks = [
         {
             # message payload payload to be validated against JSON schema
@@ -74,12 +79,14 @@ validation1 {
             sql = "SELECT * WHERE payload.value < 0"
         }
     ]
-}
+  }
+]
 ```
 
-If there are more than one validation matched for one message, all validations should be executed.
+If there are more than one validation matched for one message, all validations should be executed
+in the configured order.
 For example, if one is configured with `topics = "t/#"` and another with `topics = "t/1"`,
-when a message is published to `t/1`, the both validations should be triggered (without ordering guarantee).
+when a message is published to `t/1`, the both validations should be triggered.
 
 ## Configuration Changes
 
@@ -90,6 +97,9 @@ The value of this config is a `Map` which has the validation ID as key, and conf
 
 - GET /message_validations
   To list all the message validations
+
+- GET /message_validations?topic=t/#&schema_name=jsonsch1&schema_type=json
+  Fetch validations based on filter
 
 - PUT /message_validations
   To update a validation
