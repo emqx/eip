@@ -1,4 +1,4 @@
-# Message Filter and Validation
+# Built-in Message Validation
 
 ## Changelog
 
