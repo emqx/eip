@@ -132,6 +132,28 @@ of the retainer.
 
 We may create completely standalone storage for retained messages, not using high-level DS at all, but using only low-level DS primitives, like LTS tries and bitfield mappers.
 
+### Additional opportunities
+
+In straightforward approaches, we may still keep the TS part in the storage but additionally introduce some kind of a "secondary index" where we keep timestamped key by topic/clientid/etc.
+
+"Secondary index" will allow us still have storage "compacted" by topic/clientid/etc: we will delete the old timestamped key when we store a new one.
+
+E.g., to have compaction by topic:
+
+1. We want to insert a message `#message{topic="a/b/c", ts=TS1, ...} = message1`.
+1. We insert the message into the storage `high_bits(TS1) | lts(topic) | low_bits(TS1) => message1`.
+1. We insert the key `topic => high_bits(TS1) | lts(topic) | low_bits(TS1)` into the "secondary index".
+
+Then, we want to insert the new message with the same topic:
+
+1. We want to insert the mesage `#message{topic="a/b/c", ts=TS2, ...} = message2`.
+1. We insert the message into the storage `high_bits(TS2) | lts(topic) | low_bits(TS2) => message2`.
+1. We get the old key `high_bits(TS1) | lts(topic) | low_bits(TS1)` from the "secondary index" by `topic`.
+1. We insert the key `topic => high_bits(TS2) | lts(topic) | low_bits(TS2)` into the "secondary index".
+1. We delete `message1` by the fetched old key `high_bits(TS1) | lts(topic) | low_bits(TS1)` from the storage.
+
+This will have the advantage of still being able to "subscribe" to any topic pattern with a regular DS replayer, with the semantics: "give me the actual message(data) and all the ongoing updates." In turn, it may be helpful for subscriptions to some kinds of events, like session registrations, takeovers, etc.
+
 ### Conclusion
 
 We choose the straightforward approach with optimizations.
