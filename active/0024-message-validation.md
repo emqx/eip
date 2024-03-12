@@ -91,7 +91,14 @@ when a message is published to `t/1`, the both validations should be triggered.
 ## Configuration Changes
 
 A new config root named `message_validation` is to be added.
-The value of this config is a `Map` which has the validation ID as key, and configs as value.
+
+```
+message_validation {
+    validations = [
+        ...
+    ]
+}
+```
 
 ## APIs
 
