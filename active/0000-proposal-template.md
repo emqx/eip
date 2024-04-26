@@ -1,4 +1,4 @@
-# An Example of EMQ X Improvement Proposal
+# An Example of EMQX Improvement Proposal
 
 ## Changelog
 
