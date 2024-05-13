@@ -1,0 +1,45 @@
+@startuml session-side-state
+skinparam ranksep 20
+skinparam dpi 125
+skinparam packageTitleAlignment left
+skinparam ArrowMessageAlignment left
+skinparam DefaultTextAlignment left
+
+(init) --> (connecting) : [session start]
+
+(connecting) --> (connecting) :\
+• find_leader_timeout \n\
+• invalidate
+
+(connecting) --> (replaying) :\
+lease_streams
+
+(replaying) --> (replaying): \
+renew_stream_lease(vsn)\n\
+
+
+(replaying) --> (connecting) :\
+• renew_stream_lease_timeout\n\
+• invalidate\n\
+• renew_stream_lease(invalid vsn)\n\
+• update_streams(invalid vsn)
+
+
+(replaying) --> (updating) :\
+update_streams\n
+
+
+(updating) --> (updating) :\
+• update_streams\n\
+• renew_stream_lease(vsn_old, vsn_new)
+
+(updating) --> (replaying) :\
+renew_stream_lease(vsn_new)
+
+
+(updating) --> (connecting) :\
+• renew_stream_lease_timeout\n\
+• invalidate\n\
+• update_streams(invalid vsns)
+
+@enduml
