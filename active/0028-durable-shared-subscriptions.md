@@ -30,7 +30,7 @@ The groups' consumers are persistent sessions. They connect to the SGL, and the 
 
 SGL is responsible for reassigning streams to the other group consumers in case a consumer disconnects and for reassigning streams to the new consumers.
 
-![General Design](./0026-assets/general-design.png)
+![General Design](./0028-assets/general-design.png)
 
 All communication between the consumers(sessions) and the SGL, SGLM, is done asynchronously because leaders may need to be spawned (this requires election) or may be running on a remote node.
 
@@ -130,7 +130,7 @@ In the `updating` state, the GSFSM accepts replay requests from the session side
 
 ### State transitions
 
-![State transitions](./0026-assets/session-side-state.png)
+![State transitions](./0028-assets/session-side-state.png)
 
 ### Configuration Changes
 
