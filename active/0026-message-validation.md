@@ -34,7 +34,7 @@ This can work, but not easy to use.
 
 ### Message filter
 
-Message filtering can be achieved by confugring message validation rule to drop invalid messages.
+Message filtering can be achieved by configuring message validation rule to drop invalid messages.
 
 ## Design
 
@@ -61,10 +61,10 @@ validations = [
     description = ""
     enable = true # or 'false'
     type = validation
-    description = "drop message if it is not compabitble with my avro schema or if payload.value is less tha 0"
+    description = "drop message if it is not compabitble with my avro schema or if payload.value is less than 0"
     topics = "t/#" # or topics = ["t/1", "t/2"]
     strategy = any_pass # or all_pass
-    failure_action = disconnect # (disconnect also implies 'dorp') or 'drop' to only drop the message
+    failure_action = disconnect # (disconnect also implies 'drop') or 'drop' to only drop the message
     log_failure_at = none # debug, notice, info, warning, error
     checks = [
         {
