@@ -1,7 +1,8 @@
-# Built-in Message Validation
+# Built-in Schema Validation
 
 ## Changelog
 
+* 2024-05-22: @thalesmg Rename feature to "schema validation".
 * 2023-10-31: @zmstone Initial draft message validation, filter and transformation.
 * 2022-12-19: @zmstone Limit the scope to filter and validation.
 
@@ -11,7 +12,7 @@ A new feature for EMQX v5 to validate messages.
 
 ## Motivation
 
-### Message Validation
+### Schema Validation
 
 Technically, by using EMQX rules engine, it is possible to validate the incoming
 MQTT messages before sending the message off to data bridges.
@@ -34,7 +35,7 @@ This can work, but not easy to use.
 
 ### Message filter
 
-Message filtering can be achieved by configuring message validation rule to drop invalid messages.
+Message filtering can be achieved by configuring schema validation rule to drop invalid messages.
 
 ## Design
 
@@ -51,7 +52,7 @@ can be used to build a topic index for quick look-up.
 
 The common parts can be described as hocon config below:
 
-### Message Validation
+### Schema Validation
 
 ```
 validations = [
@@ -102,16 +103,16 @@ message_validation {
 
 ## APIs
 
-- GET /message_validations
-  To list all the message validations
+- GET /schema_validations
+  To list all the schema validations
 
-- GET /message_validations?topic=t/#&schema_name=jsonsch1&schema_type=json
+- GET /schema_validations?topic=t/#&schema_name=jsonsch1&schema_type=json
   Fetch validations based on filter
 
-- PUT /message_validations
+- PUT /schema_validations
   To update a validation
 
-- POST /message_validations
+- POST /schema_validations
   To create a new validation
 
 ## Observerbility
@@ -119,7 +120,7 @@ message_validation {
 - There should be metrics created for each processor name.
 - Opentelemetry tracing context in message properties should be preserved.
 - Client disconnect and message drop events should be traceable in the EMQX builtin tracing.
-- Emit a new event e.g. `message.validation_failure`.
+- Emit a new event e.g. `schema.validation_failure`.
   This allows users to handle the validation failures in Rule-Engine.
   For instance, publish the message to a different topic.
 
