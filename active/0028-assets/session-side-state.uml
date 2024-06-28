@@ -14,6 +14,9 @@ skinparam DefaultTextAlignment left
 (connecting) --> (replaying) :\
 lease_streams
 
+(connecting) --> (disconnected) :\
+session induced disconnect
+
 (replaying) --> (replaying): \
 renew_stream_lease(vsn)\n\
 
@@ -28,6 +31,8 @@ renew_stream_lease(vsn)\n\
 (replaying) --> (updating) :\
 update_streams\n
 
+(replaying) --> (disconnected) :\
+session induced disconnect
 
 (updating) --> (updating) :\
 • update_streams\n\
@@ -41,5 +46,8 @@ renew_stream_lease(vsn_new)
 • renew_stream_lease_timeout\n\
 • invalidate\n\
 • update_streams(invalid vsns)
+
+(updating) --> (disconnected) :\
+session induced disconnect
 
 @enduml
