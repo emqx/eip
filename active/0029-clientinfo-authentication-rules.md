@@ -43,7 +43,7 @@ Here are some examples of the rules:
 [
     {
         "description": "Client ID starting with 'v1-' is legacy clients, which cannot be authenticated using client info, break the loop",
-        "expression": "iif(regex_match(clientid, '^org1-.*$'), 'break', 'continue')"
+        "expression": "iif(regex_match(clientid, '^v1-.*$'), 'break', 'continue')"
     },
     {
         "description": "Client ID starting with 'v2-' must have the usernmae matching certificate common name",
