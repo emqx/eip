@@ -2,12 +2,13 @@
 
 ## Changelog
 
+* 2024-08-13: @zmstone Update to reflect the actual implementation.
 * 2023-10-31: @zmstone Initial draft for message validation, filter and transformation (as a part of EIP-0024).
 * 2022-12-19: @zmstone Limit the scope message filter and tranformation.
 
 ## Abstract
 
-An extension of EMQX Rule engine to support action-less message filter and transformation.
+An extension of EMQX Enterprise to support action-less message filter and transformation.
 
 ## Motivation
 
@@ -19,86 +20,83 @@ This requires the clients to publish to one topic, and subscribe to another.
 
 ## Design
 
-To support message transform, we can create a naming convention for MQTT message construction.
+Each transfromation consists of
 
-The proposed key word is `new`, by default, the message is copied to `new` then SQL language can
-mutate the `new` in `SELECT` clause.
+- A set of topic match patterns
+- A list of operations for data mutation
+- Payload decode/encode rules
+- Error handling strategy
 
-To make it easer for user, we should also consider:
+The transformation is done in below steps for each message.
 
-- Support all the existing message properties binding, for example `topic`, `qos` `retain`.
-- Use `new.user_properties` for user properties.
-  This is because the user properties in MQTT message object quite deeply nested,
-  so it was not quite easy to use.
-  We are already using `user_properties` keyword in some data bridge actions.
-- To support message multiplication (one transform to many),
-  the `new` will be copied as many times as a `FOREACH` statement has to loop.
+- Match topic (filter). Only those messages of topic matching the configured topic (filter) are processed.
+- Payload decode. When the transformation is about message payload, the payload has to be decoded first. e.g. from JSON, or avro.
+- Mutation. Evaluate the expression to mutate the input data.
+- Payload encode. When the transformation is about message payload, the payload has to be encoded back to the desired format of the subscribers.
 
-### Examples
+We pre-define a set of keys (message attributes) which can be the subjects of data mutation.
 
-- Increment `payload.value`.
+- Topic
+- Payload
+- QoS
+- Retain flag
+- User properties
 
-```
-SELECT payload.value + 1 as new.payload.value FROM 't/#'
-```
-
-- Rewrite publishing topic based on value in the payload.
-
-```
-SELECT
-  CASE WHEN payload.value < 0 THEN 't/negetive'
-       ELSE 't/normal'
-  END as new.topic
-  FROM 't/raw'
-  WHERE is_number(payload.value)
-```
-
-- Multiply message
-
-```
-FOREACH payload.myarray as element DO element as new.payload FROM 't/1', 't/2'
-```
-### Incorporated with the Rule Engine
-
-Message transformation is essentially the current Rule Engine with below changes.
-
-- There is no `actions`.
-- Only zero or exactly one rule can be matched for each message.
-  If there are more than one matched, the *last* matched topic-fitler in the
-  [prefix matching order](#prefix-matching-order) order is picked.
-- Such rules are executed before any other rules in rule engine.
-  That is: the output of a transformation rule is the input of message pub/sub and other data integration rules.
+Each tranformation is a [varifom expression](https://docs.emqx.com/en/emqx/latest/configuration/configuration.html#variform-expressions)
+which can be used to perform string operations.
 
 ## Configuration Changes
 
-Add a `tranforms` config entry to `rule_engine`
+Add a `message_tranformation` config root.
 
 ```
-rule_engine {
-  transforms {
-    rule_tranform1 {
-      type = tranform
-      description = "increment payload.value"
-      metadata {created_at = 1703075101227}
-      sql = "SELECT payload.value + 1 as new.payload.value FROM 't/#'"
+message_transformation {
+  transformations = [
+    {
+      name = trans1
+      description = ""
+      failure_action = ignore
+      log_failure {level = warning}
+      operations = [
+        {
+          key = topic
+          ## prepend client ID to the publishing topic
+          value = "concat([clientid,'/',topic])"
+        }
+      ]
+      payload_decoder {type = none}
+      payload_encoder {type = none}
+      topics = [
+        "#"
+      ]
     }
-  }
-  rules {
-    ...
-  }
+  ]
 }
-
 ```
 
-## Prefix matching order
+### Expression Examples
 
-A MQTT topic consists of words joint by '/',
-When sorting MQTT whildcard topics, the following rules apply:
+- Add client ID as the prefix of publishing topics.
 
 ```
-'#' < '+' < ANY_WORD
+{
+    key = topic
+    value = "concat([clientid,'/',topic])"
+}
 ```
 
-As an example, `t/1` is sorted *after* `t/#`.
+- Add client TLS certificate's OU as a MQTT message user property
 
+```
+{
+    key = "user_property.ou"
+    # if client_attrs.cert_dn is initialized, extract the OU
+    # otherwise user_property.ou is set as 'none'
+    value = "coalesce(regex_extract(client_attrs.cert_dn,'OU=([a-zA-Z0-9_-]+)'), 'none')"
+}
+```
 
+### Declined Alternatives
+
+- Employee rule SQL expressions
+- Message multiplication (transform one message to many)
