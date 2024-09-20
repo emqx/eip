@@ -11,7 +11,7 @@ Implement a new feature which can authenticate MQTT clients based on a set of co
 
 ## Motivation
 
-EMQX has a set complehensive authentication chain, most of which requires out-of-band requests towards an external service such as HTTP server, or a database. However, there are some scenarios where the authentication decision can be made based on the client properties and attributes, such as client ID, username, and TLS certificate.
+EMQX has a set comprehensive authentication chain, most of which requires out-of-band requests towards an external service such as HTTP server, or a database. However, there are some scenarios where the authentication decision can be made based on the client properties and attributes, such as client ID, username, and TLS certificate.
 
 For certain use cases, it is more efficient to authenticate clients based on the client properties and attributes.
 Some examples:
