@@ -14,7 +14,7 @@ The config overriding rule since EMQX 5.1 is not easy to understand and manage.
 The current (as of 5.8) config layers are as following (in the order of overrideing precidence from high to low):
 
 - Environment variables (highest precidence)
-  Enviroment varialbes starts with `EMQX_` are translated to config keys and sits on top of the override chain.
+  Environment variables which start with `EMQX_` are translated to config keys and sit on top of the override chain.
   Since usually the environment variables are set by the system administrator, it is considered the highest precidence.
 - File `etc/emqx.conf` (medium precidence)
   This file holds all the manually crafted configurations.
