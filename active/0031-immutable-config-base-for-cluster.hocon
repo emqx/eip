@@ -1,0 +1,73 @@
+# Immutable config base for cluster.hocon
+
+## Changelog
+
+* 2024-11-13: @zmstone Initial draft
+
+## Abstract
+
+Make EMQX configuration files great again.
+
+## Motivation
+
+The config overriding rule since EMQX 5.1 is not easy to understand and manage.
+The current (as of 5.8) config layers are as following (in the order of overrideing precidence from high to low):
+
+- Environment variables (highest precidence)
+  Enviroment varialbes starts with `EMQX_` are translated to config keys and sits on top of the override chain.
+  Since usually the environment variables are set by the system administrator, it is considered the highest precidence.
+- File `etc/emqx.conf` (medium precidence)
+  This file holds all the manually crafted configurations.
+  The contnet of this file is not mutable to EMQX software (in fact it can be a read-only file).
+  Since this is manually crafted, it is considered a higher precidence than `cluster.hocon`.
+- File `data/configs/cluster.hocon` (low precidence)
+  This config file is mostly hidden from the users. It holds the config changes made from the UI, API or CLI.
+
+One may argue that this is not the perfect order of overriding, but that's the fixed order in EMQX since 5.1 and we cannot change it at will. i.e. This proposal is not about changing the overriding order.
+
+The ordering itself is not the problem, but the problem is, there is lack of support for maually crafted config files under `cluster.hocon`.
+Since emqx.conf is the only option, people started putting their custom configurations in `etc/emqx.conf`, but also want to use the UI/API/CLI to change some of the configurations.
+As a result, changes made from the UI/API/CLI will override the existing merged config during the runtime, but gets overriden by the `etc/emqx.conf` when the node restarts.
+
+This is in particular a problem for emqx kubernetes operator, because it encourages the users to put all configs in one yaml block which gets mapped to `etc/emqx.conf` during the deployment.
+
+## Design
+
+Add a conventional layer named (`base.hocon`) to the config overriding chain, which sits under `cluster.hocon`.
+So the new overriding chain will be:
+
+- Environment variables (highest precidence)
+- File `etc/emqx.conf` (medium precidence)
+- File `data/configs/cluster.hocon` (low precidence)
+- File `etc/base.hocon` (lowest precidence)
+
+## Configuration Changes
+
+Add a new line to `cluster.hocon` at the top of it:
+
+```
+include "etc/base.hocon"
+```
+
+The path to base.hocon depends on the packaging flavor of EMQX.
+
+-  docker: `/opt/emqx/etc/base.hocon`
+-  RPM/DEB: `/etc/emqx/base.hocon`
+
+## Backwards Compatibility
+
+Since hocon's include directive is used, the existing configurations will not be affected.
+Also, include is silently ignored if the file does not exist, so the new file can be added without breaking the existing installations.
+
+## Document Changes
+
+Configuration documentation should be updated to reflect the new file.
+
+## Testing Suggestions
+
+Since we are risking at duplicating the configurations in base.hocon and cluster.hocon, we should cover the test scenarios where the content of base.hocon and cluster.hocon are very large and have many overlapping configurations.
+
+- Functionality wise, the configuration should be verified to be merged correctly.
+- Performance wise, large amount of configs should not affect the startup time of the node.
+
+## Declined Alternatives
