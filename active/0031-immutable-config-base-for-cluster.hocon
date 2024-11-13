@@ -29,7 +29,8 @@ The ordering itself is not the problem, but the problem is, there is lack of sup
 Since emqx.conf is the only option, people started putting their custom configurations in `etc/emqx.conf`, but also want to use the UI/API/CLI to change some of the configurations.
 As a result, changes made from the UI/API/CLI will override the existing merged config during the runtime, but gets overriden by the `etc/emqx.conf` when the node restarts.
 
-This is in particular a problem for emqx kubernetes operator, because it encourages the users to put all configs in one yaml block which gets mapped to `etc/emqx.conf` during the deployment.
+This is in particular a problem for emqx kubernetes operator, because it encourages the users to put all configs in one yaml block which gets mapped to `etc/emqx.conf` when bootstraping the deployment.
+And changes made to the resource will be applied by calling the API which only temporarily changes the configurations until the pod restarts.
 
 ## Design
 
