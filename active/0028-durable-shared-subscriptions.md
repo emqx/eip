@@ -33,14 +33,18 @@ Several consumers subscribe to a special topic `$shared/GROUP_ID/TOPIC_FILTER` (
 
 With the durable backend (Durable Storage backend, DS), all messages pertain to the ordered _streams_ of messages. Streams may be read sequentially (possibly skipping some messages). Streams may be finalized (i.e., closed) and so fully consumed.
 
-Since the streams are a means of sharding messages, the natural idea is to use the same sharding mechanism for shared subscriptions. That is, assign disjointed subsets of streams to different consumers and let them consume their streams in parallel.
+Since the streams are means of sharding messages, the natural idea is to use the same sharding mechanism for shared subscriptions. That is, assign disjointed subsets of streams to different consumers and let them consume their streams in parallel.
 
 We need an entity responsible for distributing such streams across consumers.
 We implement such entity as a cluster-unique process called **Shared Group Leader** or simply **Leader**.
 
-The Leader is spawned when the first consumer connects to the group subscription.
+The Leader is spawned by the node-local leader registry when the first consumer connects to the group subscription.
 
 The global registration mechanism is based on the DS precondition feature, which allows the creation/deletion of message entries in the DS atomically.
+Current leader owns a special data entry in the DS and periodically renews the ownership.
+If the leader dies (e.g. its node goes down), the connected sessions eventually detect the leader loss and ask the node-local leader registry to find the leader again.
+The leader registry either reclaims the leader's data in the DS and spawns a new leader or finds the data already reclaimed by another leader and responds to the session with the new leader's location.
+
 
 Leaders' data is also stored in the DS. Note that the DS for the Leader registration and other data is completely separate from the DS for the messages.
 
@@ -74,7 +78,8 @@ So, the Shared Subscription Handler knows how the session works but nothing abou
 
 The Agent is the entity that provides the interface for the Shared Subscription Handler to obtain stream granting/revocation events and reports stream consumption progress.
 
-For the community edition, the Agent is implemented as a stub that does not perform any actions, so sessions' subscriptions and unsubscriptions have no effect.
+For the community edition, the durable shared subscription feature is unavailable, so the Agent is implemented as a stub that does not perform any actions, so sessions' subscriptions and unsubscriptions have no effect.
+A client having a durable session still may subscribe to some shared subscription topic, but no correspondent messages will be delivered.
 
 For the enterprise edition, the Agent actually communicates with the Leaders, receives streams for consumption, and reports stream consumption progress.
 
@@ -82,7 +87,7 @@ Technically, the Agent itself does not have much communication logic, because it
 
 #### Shared Subscription Borrower
 
-Borrower is the entity within the Agent responsible for a single shared subscription. It talks to the Leader, receives streams for subscription, and reports stream consumption progress.
+Borrower is the entity within the Agent. It is responsible for a single shared subscription. It talks to the Leader, receives streams for subscription, and reports stream consumption progress.
 
 It is important, that the Borrowers within the session's Agent are isolated from each other and are _not identified_ by the group ID + topic filter. In case of quick unsubscribe/subscribe sequence, there may be multiple Borrowers within the same Agent talking to the same Leader. One connecting to the Leader and the other ones finalizing the previous subscriptions.
 
@@ -101,8 +106,9 @@ The Leader is the entity that is responsible for a single shared subscription gr
 
 The Shared Subscription Handler, Agent, and Borrowers are nested session-side entities: The Shared Subscription Handler encapsulates an Agent, which encapsulates a collection of Borrowers. Communication between them is done via simple function calls.
 
-Leader resides in a separate process, so it communicates with Borrowers via completely asynchronous message-based protocol.
 Note that Borrowers are the innermost entities, so these messages to and from the Leader are opaquely propagated through the Agent and Shared Subscription Handler layers.
+
+Leader resides in a separate process, so it communicates with Borrowers via completely asynchronous message-based protocol. The Leader is a cluster-unique process, so it may belong to any node in the cluster, e.g. a different node from the one where a session resides.
 
 ### Protocol between Borrower and Leader
 
