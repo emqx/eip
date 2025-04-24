@@ -62,7 +62,7 @@ Based on real-world scenarios, we have the following assumptions:
 
 - Clients do not reconnect within millisecond delays, so it is unlikely to have two channels race for the same clientid for session operations.
 
-Therefore, we could use the transport connected timestamp (trpt_connected_at) in ms as the version of the channel.
+Therefore, we could use the transport connected timestamp (`trpt_connected_at`) in ms as the version of the channel.
 
 @NOTE, we could use other timestamp too such as client provided timestamps embeded in MQTT user props. 
 
@@ -85,27 +85,38 @@ Based on the current EMQX implementation, we have the following facts:
 
 - Session registration is a bag table; multiple channels of the same client could co-exist. New design could follow this.
 
+Based on the above, with versioning, channels from the same client become comparable, and EMQX could find the most recent channel or check if the current connection it is processing is outdated.
 
-Based on the above, with versioned channels, channels from the same client become comparable, and EMQX could find the most recent channel 
-or check if the current processing connection is outdated.
+We use three versions during the processing:
 
-If it is outdated, it returns MQTT.CONNACK with a negative reason code.
-Otherwise, it tries to begin takeover of the most recent channel.
+- `ver_LocalMax`
 
-Whatever the takeover success or not (created new session @TODO expand this), it tries to do a transactional update with the version of the 
-most recent channel (`ver_local_max`). In this transaction, it reads the real max version (`ver_real_max`) and compares it with the `ver_local_max`.
+  Max version of existing `channel`s from **local async dirty read**.
+  
+  Value is `undefined` if and only if no matching channel is found.
 
-If they match, it should add itself to the registration table.
+- `ver_RealMax`
 
-If unmatched and `curr_vsn` < `ver_real_max`, it should abort the transaction and then return MQTT.CONNACK with a negative reason code.
+  Max version of existing `channel`s from **transactional read**.
+  
+  Value is `undefined` if and only if no matching channel is found.
 
-If unmatched AND `curr_vsn` > `ver_real_max` > `ver_local_max`, it should abort the transaction and then restart this procedure to takeover 
-the channel has `ver_real_max`.
+- `ver_curr`
+  
+  `channel` Version from the execution process stack.
+  
+With actions below:
 
-It shouldn't happen that `curr_vsn` > `ver_real_max` AND `ver_real_max` < `ver_local_max`, but for correctness, it should abort the transaction 
-and then return MQTT.CONNACK with a negative reason code.
+IF `ver_curr` < `ver_LocalMax`, drops the processing early, returns negtive CONNACK. __HAPPY FAIL__
 
-It continues to finish the 2nd phase, the `{takeover, 'end'}` part, so the old channel will deregister itself from the registry.
+ELSEIF `ver_curr` < `ver_RealMax`, drops the processing late, returns negtive CONNACK. __EXPENSIVE FAIL__
+
+ELSEIF `ver_RealMax` > `ver_LocalMax`, restart the processing with `ver_RealMax` with limited number of retries. __MOST EXPENSIVE PATH__
+
+ELSEIF `ver_RealMax` == `ver_LocalMax`, write with `ver_curr` and continue with the processing. __HAPPY ENDING__
+
+It is very unlikely to happen that `ver_curr` > `ver_RealMax` AND `ver_RealMax` < `ver_LocalMax`, but for correctness, it should abort the transaction and then return MQTT.CONNACK with a negative reason code then log with INFO message.
+
 
 ```mermaid
 ---
@@ -114,31 +125,44 @@ config:
 ---
 flowchart TD
     A(["NewConnection"]) --> B{"clearSession?"};
-
+   
     B -- YES --> D["OpenSession"];
-    D --> E{"ReadMaxVsn"};
-    E -- FOUND --> F{"TakeoverBeginSuccess"};
+    D --> E{"ReadLocalMax"};    
+    E -- FOUND --> E1{"LocalMax>curr_ver?"}
+    F0@{shape: lean-r, label: "vsn"}
+    E1 -- "`NO
+    ver=LocalMax`" --> F0
+    F0 --> F{"TakeoverBeginSuccess"};
+    E1 -- YES --> L2
 
     E -- NOTFOUND --> C;
-    F -- YES --> Transaction
+    F -- "`YES
+    vsn=LocalMax`" --> Transaction
 
     F -- NO --> C;
     B -- NO --> C["NewSession"];
 
-    H["ReadLatestVsn"]
-    H --> H1{"LatestVsn>CurrVsn"}
+    H0@{shape: lean-r, label: "vsn"}
+    H0 --> H["ReadRealMax"]
+    H --> H1{"RealMax>CurrVsn"}
     H1 -- YES --> K
     H1 -- NO --> I
-    C --> Transaction
-    H --> I{"LocalMax==LatestVsn?"}
+    C --"vsn=undef"--> Transaction
+    H --> I{"LocalMax==RealMax?"}
     I -- NO --> K["Abort"]
     I -- YES --> J["commit"]
+    
     J --> L1["SUCCESS"]
     K --> M{Retriable?}
     M --NO--> L2["FAIL"]
-    M --YES--> F
+    M --"`YES
+    vsn=RealMax`"--> F0
+
+   L2 --> Z1["Connack"]
+   L1 --> Z0["Continue"]
 
     subgraph Transaction
+        H0
         H
         H1
         I
@@ -148,12 +172,18 @@ flowchart TD
 
     subgraph LocalDirtyAsync
     E
+    E1
+    F0
     F
     C
     end
+
+
 ```
 
-### Designing lcr_channel
+The transaction to run is micro and abortive, it only reads and writes the same key, only one lock is taken so it is unlikely to get restarted by mria/mnesia.
+
+### record #lcr_channel{}
 
 `lcr_channel` of LCR represents the EMQX channel that provides a global view and maintain a global state within the cluster.
 
@@ -180,7 +210,7 @@ For delete, it is done asynchronously (dirty), but it will never overrun the wri
 
 There is no need for updates in core or replicant. @TODO Do we need to prove that it is written once?
 
-### lcr_channel life cycle
+### lcr_channel lifecycle
 
 lcr_channel is written when:
 
@@ -188,18 +218,35 @@ lcr_channel is written when:
 
 1. the session takeover 'begin' is finished AND after updating the local ETS for other tables of the channel. 
 
-
 lcr_channel can be read at any time.
 
 
 For deletion, there are the following triggers:
 
 1. the channel process exits gracefully, where in the terminating phase, it deregisters itself from LCR.
+   triggers:
+   - transport close
+   - taken over (`{takeover, 'end'}`)
+   - discarded
+   - kicked
 
 1. node down/Mnesia down event: 
    
    The living node may remove the channel belonging to the down node. It must be done only once within 
    the cluster successfully.
+   
+   For replicant node down, its upstream core node should clean the channels for it.
+   For core node down, @TODO
+   
+   
+### Drawbacks
+
+- Compare to the `ekka_locker`, using transaction will stress the `mnesia_locker` which is single point of bottleneck.
+
+  But `mnesia_locker` is more robust than `ekka_locker`.
+
+- "registration history function" will not be supported as we don't want large data set.
+  It must be reimplemented.
    
 ## Backwards Compatibility
 
