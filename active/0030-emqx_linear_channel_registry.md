@@ -107,6 +107,51 @@ and then return MQTT.CONNACK with a negative reason code.
 
 It continues to finish the 2nd phase, the `{takeover, 'end'}` part, so the old channel will deregister itself from the registry.
 
+```mermaid
+---
+config:
+  theme: redux
+---
+flowchart TD
+    A(["NewConnection"]) --> B{"clearSession?"};
+
+    B -- YES --> D["OpenSession"];
+    D --> E{"ReadMaxVsn"};
+    E -- FOUND --> F{"TakeoverBeginSuccess"};
+
+    E -- NOTFOUND --> C;
+    F -- YES --> Transaction
+
+    F -- NO --> C;
+    B -- NO --> C["NewSession"];
+
+    H["ReadLatestVsn"]
+    H --> H1{"LatestVsn>CurrVsn"}
+    H1 -- YES --> K
+    H1 -- NO --> I
+    C --> Transaction
+    H --> I{"LocalMax==LatestVsn?"}
+    I -- NO --> K["Abort"]
+    I -- YES --> J["commit"]
+    J --> L1["SUCCESS"]
+    K --> M{Retriable?}
+    M --NO--> L2["FAIL"]
+    M --YES--> F
+
+    subgraph Transaction
+        H
+        H1
+        I
+        J
+        K
+    end
+
+    subgraph LocalDirtyAsync
+    E
+    F
+    C
+    end
+```
 
 ### Designing lcr_channel
 
