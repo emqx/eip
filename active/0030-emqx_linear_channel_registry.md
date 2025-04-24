@@ -121,64 +121,59 @@ It is very unlikely to happen that `ver_curr` > `ver_RealMax` AND `ver_RealMax` 
 ```mermaid
 ---
 config:
-  theme: redux
+      theme: redux
 ---
 flowchart TD
-    A(["NewConnection"]) --> B{"clearSession?"};
-   
-    B -- YES --> D["OpenSession"];
-    D --> E{"ReadLocalMax"};    
-    E -- FOUND --> E1{"LocalMax>curr_ver?"}
-    F0@{shape: lean-r, label: "vsn"}
-    E1 -- "`NO
-    ver=LocalMax`" --> F0
-    F0 --> F{"TakeoverBeginSuccess"};
-    E1 -- YES --> L2
+    NewConn-->ReadLocalMax
+    ReadLocalMax-->C0{LocalMax>Curr?}
+    C0--TRUE-->Fail
+    C0--FALSE-->C1{CleanStart}
+    VsnDirty --->Takeover
+    C1 --FALSE--> VsnDirty@{shape=input}
 
-    E -- NOTFOUND --> C;
-    F -- "`YES
-    vsn=LocalMax`" --> Transaction
+    Takeover--Fail-->NewSession
 
-    F -- NO --> C;
-    B -- NO --> C["NewSession"];
+    C1 --TRUE--> NewSession
 
-    H0@{shape: lean-r, label: "vsn"}
-    H0 --> H["ReadRealMax"]
-    H --> H1{"RealMax>CurrVsn"}
-    H1 -- YES --> K
-    H1 -- NO --> I
-    C --"vsn=undef"--> Transaction
-    H --> I{"LocalMax==RealMax?"}
-    I -- NO --> K["Abort"]
-    I -- YES --> J["commit"]
+    ReadRealMax-->C2{RealMax>Curr?}
+
+    Takeover--Success---->Transaction
+    NewSession-->Transaction
+
+
+    C2--FALSE-->C3{LocalMax==RealMax}
+    C2--TRUE-->Abort
+
+    C3--True-->Commit
+    C3--False-->Abort
+
     
-    J --> L1["SUCCESS"]
-    K --> M{Retriable?}
-    M --NO--> L2["FAIL"]
-    M --"`YES
-    vsn=RealMax`"--> F0
+    Abort-->C4{Retryable?};
+    C4--YES-->VsnDirty
+    C4--NO-->Fail
 
-   L2 --> Z1["Connack"]
-   L1 --> Z0["Continue"]
+    Commit-->TakoverContinue
 
+    Fail-->NegtiveConnack
+    TakoverContinue-..->PositiveConnak
+
+    subgraph LocalAsyncDirty
+        direction TB
+        ReadLocalMax
+        C0
+        C1
+        VsnDirty
+        Takeover
+        NewSession
+    end
     subgraph Transaction
-        H0
-        H
-        H1
-        I
-        J
-        K
+        direction TB
+        ReadRealMax
+        C2
+        C3
+        Abort
+        Commit
     end
-
-    subgraph LocalDirtyAsync
-    E
-    E1
-    F0
-    F
-    C
-    end
-
-
 ```
 
 The transaction to run is micro and abortive, it only reads and writes the same key, only one lock is taken so it is unlikely to get restarted by mria/mnesia.
