@@ -16,7 +16,7 @@ lagging or the old channel process is unresponsive.
 
 In this EIP, we propose another channel registration subsystem called LCR ("Linear Channel Registry") that 
 expands the channel prop with version (e.g., trpt_connected_at timestamp when transport connects) so that the 
-yong and old channels could be determined to minimize the issues caused by race conditions during session takeover
+young and old channels could be determined to minimize the issues caused by race conditions during session takeover
 while the client is reconnecting, especially in a massive volume.
 
 ## Motivation
@@ -107,9 +107,9 @@ We use three versions during the processing:
   
 With actions below:
 
-IF `ver_curr` < `ver_LocalMax`, drops the processing early, returns negtive CONNACK. __HAPPY FAIL__
+IF `ver_curr` < `ver_LocalMax`, drops the processing early, returns negative CONNACK. __HAPPY FAIL__
 
-ELSEIF `ver_curr` < `ver_RealMax`, drops the processing late, returns negtive CONNACK. __EXPENSIVE FAIL__
+ELSEIF `ver_curr` < `ver_RealMax`, drops the processing late, returns negative CONNACK. __EXPENSIVE FAIL__
 
 ELSEIF `ver_RealMax` > `ver_LocalMax`, restart the processing with `ver_RealMax` with limited number of retries. __MOST EXPENSIVE PATH__
 
@@ -152,10 +152,10 @@ flowchart TD
     C4--YES-->VsnDirty
     C4--NO-->Fail
 
-    Commit-->TakoverContinue
+    Commit-->TakeoverContinue
 
     Fail-->NegtiveConnack
-    TakoverContinue-..->PositiveConnak
+    TakeoverContinue-..->PositiveConnack
 
     subgraph LocalAsyncDirty
         direction TB
