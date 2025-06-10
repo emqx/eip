@@ -195,6 +195,9 @@ flowchart TD
 
 The transaction to run is micro and abortive, it only reads and writes the same key, only one lock is taken so it is unlikely to get restarted by mria/mnesia.
 
+
+See [Formal Specification in TLA](0030-assets/LSR.tla)
+
 ### record #lsr_channel{}
 
 `lsr_channel` of LSR represents the EMQX channels that provides a global view and maintain a global state within the cluster.
