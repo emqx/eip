@@ -42,10 +42,10 @@ $SETOPTS
 
 #### Keepalive Topics
 
-Single client update (client id in topic):
+Single client update (applies to the publishing client):
 
 ```
-$SETOPTS/mqtt/keepalive/<clientid>
+$SETOPTS/mqtt/keepalive
 ```
 
 Batch update (multiple clients in one message):
@@ -87,7 +87,7 @@ Payload is a JSON array of objects.
 
 - `clientid` (string, required, bulk only): Target MQTT client identifier
 - `keepalive` (integer, required, bulk only): New keepalive interval in seconds
-- Single device payload is a string integer; client id is carried in the topic.
+- Single device payload is a string integer; the client id is derived from the publishing client's session.
 
 The broker computes the effective timeout as:
 
@@ -99,12 +99,12 @@ keepalive * 1.5
 
 1. **Message Reception**
    - Broker receives a PUBLISH message on
-     - `$SETOPTS/mqtt/keepalive/<clientid>` for single updates, or
+     - `$SETOPTS/mqtt/keepalive` for single updates (applies to the publishing client), or
      - `$SETOPTS/mqtt/keepalive-bulk` for batch updates
    - Payload is parsed based on the topic type
 
 2. **Payload Normalization**
-   - For single updates, parse payload as a string integer and pair it with the `clientid` from the topic
+   - For single updates, parse payload as a string integer and use the `clientid` of the publishing client
    - For batch updates, parse payload as a JSON array of objects
    - Invalid formats cause the message to be rejected
 
@@ -169,7 +169,7 @@ This feature is fully backward compatible:
 
 ## Document Changes
 
-- Document the new system topics `$SETOPTS/mqtt/keepalive/<clientid>` and `$SETOPTS/mqtt/keepalive-bulk`
+- Document the new system topics `$SETOPTS/mqtt/keepalive` and `$SETOPTS/mqtt/keepalive-bulk`
 - Document the payload formats for single and batch updates
 - Document the behavior when sessions do not exist
 - Document that overrides are in-memory only and lost on broker restart
@@ -177,7 +177,7 @@ This feature is fully backward compatible:
 
 ## Testing Suggestions
 
-- Test single client keepalive updates via `$SETOPTS/mqtt/keepalive/<clientid>`
+- Test single client keepalive updates via `$SETOPTS/mqtt/keepalive` (publishing client updates its own keepalive)
 - Test batch client keepalive updates via `$SETOPTS/mqtt/keepalive-bulk`
 - Test that active sessions update keepalive timeout without disconnection
 - Test that clients with shorter heartbeat intervals remain connected
