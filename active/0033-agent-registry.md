@@ -7,6 +7,7 @@
 * 2026-02-05: @codex Add trusted JKU policy for runtime signed messages
 * 2026-02-05: @codex Simplify to trusted-JKU-list-or-permissive model
 * 2026-02-05: @codex Add Dashboard UI MVP scope (simple CRUD-first design)
+* 2026-02-05: @codex Add broker-managed status field and remove cleanup flow
 
 ## Abstract
 
@@ -46,7 +47,7 @@ user-friendly mechanism for:
    authentication requirements)
 2. Agents to discover other agents dynamically
 3. Administrators to view, search, filter, and manage registered agents
-4. Automatic cleanup of stale registrations when agents disconnect
+4. Clear online/offline visibility for registered agents
 5. Validation and schema enforcement for agent registration data
 
 Without this feature, developers must build custom discovery mechanisms on top
@@ -69,8 +70,8 @@ messages while providing enhanced functionality through:
 2. **Registry Service**: A new internal service that indexes and validates
    registrations and keeps query state in sync with retained messages
 3. **Admin Interfaces**: CLI commands and Dashboard UI for registry management
-4. **Automatic Lifecycle Management**: Integration with Last Will and Testament
-   (LWT) for automatic cleanup/offline signaling
+4. **Automatic Lifecycle Reflection**: Broker-managed status updates in card
+   extension metadata (`online`/`offline`)
 5. **Security Metadata**: Agent Cards include public key / JWKS metadata for
    optional message signing and encryption policies
 
@@ -108,7 +109,7 @@ the standardized A2A topic model above.
 ### Agent Card Schema
 
 An Agent Card is a JSON document conforming to the A2A Agent Card specification
-with EMQX extensions for MQTT transport and security:
+with MQTT extensions for security:
 
 ```json
 {
@@ -124,23 +125,14 @@ with EMQX extensions for MQTT transport and security:
     "pushNotifications": true,
     "extensions": [
       {
-        "uri": "urn:emqx:a2a:mqtt-profile:v1",
-        "description": "MQTT topic profile and security metadata for EMQX.",
+        "uri": "urn:a2a:mqtt-profile:v1",
+        "description": "Broker registry metadata extension.",
         "required": false,
         "params": {
-          "org_id": "com.example",
-          "unit_id": "factory-a",
-          "agent_id": "iot-ops-agent-001",
-          "username": "com.example/factory-a/iot-ops-agent-001",
-          "topics": {
-            "discovery": "a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001",
-            "request": "a2a/v1/request/com.example/factory-a/iot-ops-agent-001",
-            "response": "a2a/v1/response/com.example/factory-a/iot-ops-agent-001/inbox",
-            "event": "a2a/v1/event/com.example/factory-a/iot-ops-agent-001"
-          },
           "securityMetadata": {
             "jwksUri": "https://keys.example.com/.well-known/jwks.json"
-          }
+          },
+          "status": "online"
         }
       }
     ]
@@ -193,6 +185,10 @@ with EMQX extensions for MQTT transport and security:
 }
 ```
 
+This proposal defines `status` as an extension field in the MQTT profile
+extension params. Allowed values are `online` and `offline`, and the value is
+broker-managed (not client-authoritative).
+
 ### Core Components
 
 #### 1. Registry Service
@@ -203,13 +199,13 @@ A new Erlang service (`emqx_a2a_registry`) that:
   agents for fast lookup
 - **Validates Registrations**: Enforces schema validation on incoming Agent
   Cards
-- **Manages Lifecycle**: Tracks agent liveness through LWT and heartbeat
-  mechanisms
+- **Manages Lifecycle**: Tracks agent liveness through connection state and
+  updates extension status metadata
 - **Provides Query API**: Exposes internal APIs for CLI and Dashboard to query
   the registry
 
 The service subscribes to the registry topic pattern and maintains state
-synchronized with retained messages stored in the broker.
+synchronized with retained messages stored in EMQX.
 
 #### 2. Registration via MQTT
 
@@ -222,9 +218,13 @@ Retain: true
 Payload: <Agent Card JSON>
 ```
 
-The broker intercepts publications to registry topics, validates the payload,
-and updates the registry index. Invalid registrations are rejected with a
-PUBACK reason code indicating the validation error.
+EMQX intercepts publications to registry topics, validates the payload,
+and updates the registry index.
+
+For newly accepted cards, EMQX persists the retained card with extension status
+set to `online` regardless of whether the incoming payload includes this field.
+Invalid registrations are rejected with a PUBACK reason code indicating the
+validation error.
 
 #### 3. Discovery via MQTT
 
@@ -232,7 +232,7 @@ Agents discover other agents by subscribing to registry topics:
 
 ```bash
 # Subscribe to all agents in an organization
-Topic: a2a/v1/discovery/com.example/+
+Topic: a2a/v1/discovery/com.example/+/+
 
 # Subscribe to specific agent
 Topic: a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
@@ -244,20 +244,18 @@ Topic: a2a/v1/discovery/+/+
 Upon subscription, agents immediately receive all retained Agent Cards matching
 the subscription pattern, providing instant discovery.
 
-#### 4. Automatic Cleanup
+#### 4. Broker-Managed Status Extension
 
-When an agent disconnects ungracefully, its Last Will and Testament (LWT)
-message can clear the retained registration:
+EMQX does not auto-clean retained cards when an agent disconnects. Instead, it
+keeps the retained card and updates extension status metadata:
 
-```bash
-Topic: a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
-QoS: 1
-Retain: true
-Payload: null  # Clears the retained message
-```
+- On accepted registration/update: status is persisted as `online`
+- When agent goes offline: status is updated to `offline`
+- When the same agent reconnects and is active again: status is updated back to
+  `online`
 
-Alternatively, agents can publish an explicit retained offline Agent Card
-(`"status": "offline"`) before disconnecting gracefully.
+This ensures discovery remains stable while liveness is visible directly in the
+retained card.
 
 #### 5. Interaction Modalities with MQTT 5.0
 
@@ -368,7 +366,7 @@ New "A2A Registry" section in the EMQX Dashboard:
    inferences from untrusted runtime message headers.
 
 4. **Admin Override**: Administrators can manage registrations directly,
-   bypassing normal MQTT publication (useful for manual cleanup or
+   bypassing normal MQTT publication (useful for manual correction or
    administrative control).
 
 5. **Rate Limiting**: Registration updates are rate-limited to prevent abuse
@@ -419,7 +417,7 @@ a2a_registry {
   enable = false
 
   ## Topic prefix pattern for registry topics
-  ## Default: "a2a/v1/discovery/{org_id}/{agent_id}"
+  ## Default: "a2a/v1/discovery/{org_id}/{unit_id}/{agent_id}"
   topic_prefix = "a2a/v1/discovery"
 
   ## Maximum size of Agent Card payload (bytes)
@@ -427,10 +425,6 @@ a2a_registry {
 
   ## Rate limit for registration updates (per agent, per minute)
   registration_rate_limit = 10
-
-  ## TTL for offline agents before automatic cleanup (seconds)
-  ## 0 means never auto-cleanup
-  offline_ttl = 3600
 
   ## Enable schema validation
   validate_schema = true
@@ -537,13 +531,14 @@ This feature is fully backward compatible:
 1. **Registry Service**:
    - Agent Card validation (valid/invalid schemas)
    - Index operations (add, update, delete, query)
-   - Lifecycle management (online/offline transitions)
+   - Lifecycle management (online/offline status updates)
    - Rate limiting enforcement
 
 2. **MQTT Integration**:
    - Registration via PUBLISH with RETAIN flag
    - Discovery via SUBSCRIBE receiving retained messages
-   - LWT cleanup on disconnect
+   - Offline transition updates retained card extension status to `offline`
+   - Reconnect transition updates retained card extension status to `online`
    - ACL enforcement
    - MQTT 5 properties (`response_topic`, `correlation_data`, user properties)
    - Registration trust policy with `trusted_jkus`
@@ -562,7 +557,7 @@ This feature is fully backward compatible:
    - Agent publishes registration
    - Another agent discovers it via subscription
    - Admin views it in Dashboard
-   - Agent disconnects, registration is cleaned up
+   - Agent disconnects, status changes to offline in retained card
 
 2. **Multi-Agent Scenario**:
    - Register 1000 agents
