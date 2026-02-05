@@ -447,14 +447,18 @@ a2a_registry {
 Registry topics should be protected by ACL rules. Example:
 
 ```bash
-# Recommended username format: {org_id}/{unit_id}/{agent_id}
-# Default A2A rules (can be placed in default acl.conf):
+%% Recommended username format: {org_id}/{unit_id}/{agent_id}
+%% Default A2A rules (can be placed in default acl.conf):
 
-# Allow all authenticated clients to discover cards
-# Allow each client to receive only its own responses
-{allow, all, subscribe, ["a2a/v1/discovery/#", "a2a/v1/reply/${username}/#"]}.
+%% Allow all authenticated clients to discover cards
+%% Allow all clients to receive only its own replies
+%% Allow all clients to receive events from all
+{allow, all, subscribe, ["a2a/v1/discovery/#", "a2a/v1/reply/${username}/#", "$a2a/v1/event/#"]}.
 
-# Allow all authenticated clients to send requests
+%% Allow all agents to register to self topic, and send event to self topic
+{allow, all, publish, ["a2a/v1/discover/${username}/#", "a2a/v1/event/${username}/#"]}.
+
+%% Allow all to request all.
 {allow, all, publish, ["a2a/v1/request/#"]}.
 ```
 
