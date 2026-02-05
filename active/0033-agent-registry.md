@@ -1,17 +1,19 @@
-# A2A Agent Registry as a Standard Feature
+# A2A Registry as a Standard Feature
 
 ## Changelog
 
 * 2026-02-03: @zmstone/codex Initial draft
 * 2026-02-03: @codex Align with A2A MQTT profile and tighten EMQX wording
+* 2026-02-05: @codex Add trusted JKU policy for runtime signed messages
+* 2026-02-05: @codex Simplify to trusted-JKU-list-or-permissive model
 
 ## Abstract
 
-This proposal introduces an A2A Agent Registry feature for EMQX that enables
+This proposal introduces an A2A Registry feature for EMQX that enables
 autonomous AI agents to discover and collaborate through a standardized,
 event-driven MQTT 5.0 mechanism. The registry uses retained Agent Cards on
 A2A-defined discovery topics and aligns with an A2A MQTT profile, including
-namespace conventions, MQTT 5 properties, JSON-RPC payload guidance, and
+topic path conventions, MQTT 5 properties, JSON-RPC payload guidance, and
 security metadata for public-key-based trust.
 The feature improves user experience for both MQTT clients (agents) and system
 administrators through CLI and Dashboard management tools while preserving native
@@ -48,7 +50,7 @@ user-friendly mechanism for:
 
 Without this feature, developers must build custom discovery mechanisms on top
 of raw retained messages, leading to inconsistent implementations, security
-gaps, and operational overhead. Providing Agent Registry as a standard EMQX
+gaps, and operational overhead. Providing A2A Registry as a standard EMQX
 feature reduces integration cost while maintaining backward compatibility with
 existing MQTT infrastructure.
 
@@ -56,7 +58,7 @@ existing MQTT infrastructure.
 
 ### Architecture Overview
 
-The Agent Registry feature builds on EMQX's existing retained message
+The A2A Registry feature builds on EMQX's existing retained message
 capabilities, adding a structured layer of management, validation, and
 user-facing interfaces. The registry maintains agent metadata in retained
 messages while providing enhanced functionality through:
@@ -77,23 +79,28 @@ Following the A2A MQTT profile, the registry uses this discovery topic
 hierarchy:
 
 ```
-a2a/v1/discovery/{org-id}/{agent-id}
+a2a/v1/discovery/{org_id}/{unit_id}/{agent_id}
 ```
 
 Where:
-- `a2a/v1/discovery`: A2A discovery namespace
-- `{org-id}`: Organization or trust domain identifier (e.g., reverse DNS:
+- `a2a/v1/discovery`: A2A discovery prefix
+- `{org_id}`: Organization or trust domain identifier (e.g., reverse DNS:
   `com.example`)
-- `{agent-id}`: Unique identifier for the agent instance
+- `{unit_id}`: Business unit or deployment segment identifier
+- `{agent_id}`: Unique identifier for the agent instance
+
+Recommended MQTT identity mapping:
+- Client ID or Username format: `{org_id}/{unit_id}/{agent_id}` (do not include `/` in the IDs)
+- This enables simple conventional ACL patterns aligned with A2A topic paths.
 
 In addition to discovery topics, the Agent Card endpoint fields SHOULD point to
-the standardized interaction namespace:
+the standardized interaction path:
 
 ```
-a2a/v1/{org-id}/{namespace}/{agent-id}/{method}
+a2a/v1/{method}/{org_id}/{unit_id}/{agent_id}
 ```
 
-Where `{method}` is typically one of `requests`, `status`, or `events`.
+Where `{method}` is typically one of `request`, `response`, or `event`.
 For flexibility, EMQX allows configurable prefixes, but the default profile is
 the standardized A2A topic model above.
 
@@ -104,42 +111,84 @@ with EMQX extensions for MQTT transport and security:
 
 ```json
 {
-  "agentId": "finance-analyzer-001",
-  "orgId": "com.example",
-  "namespace": "production",
-  "name": "Financial Analysis Agent",
+  "name": "IoT Operations Agent",
+  "description": "Monitors factory telemetry and coordinates remediation actions.",
   "version": "1.2.3",
-  "capabilities": [
+  "provider": {
+    "organization": "Example Manufacturing",
+    "url": "https://example.com"
+  },
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true,
+    "extensions": [
+      {
+        "uri": "urn:emqx:a2a:mqtt-profile:v1",
+        "description": "MQTT topic profile and security metadata for EMQX.",
+        "required": false,
+        "params": {
+          "org_id": "com.example",
+          "unit_id": "factory-a",
+          "agent_id": "iot-ops-agent-001",
+          "username": "com.example/factory-a/iot-ops-agent-001",
+          "topics": {
+            "discovery": "a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001",
+            "request": "a2a/v1/request/com.example/factory-a/iot-ops-agent-001",
+            "response": "a2a/v1/response/com.example/factory-a/iot-ops-agent-001/inbox",
+            "event": "a2a/v1/event/com.example/factory-a/iot-ops-agent-001"
+          },
+          "securityMetadata": {
+            "jwksUri": "https://keys.example.com/.well-known/jwks.json"
+          }
+        }
+      }
+    ]
+  },
+  "defaultInputModes": ["application/json"],
+  "defaultOutputModes": ["application/json"],
+  "supportedInterfaces": [
     {
-      "type": "text-analysis",
-      "description": "Analyzes financial documents",
-      "inputSchema": {...},
-      "outputSchema": {...}
+      "protocolBinding": "MQTT5+JSONRPC",
+      "protocolVersion": "1.0",
+      "url": "mqtts://broker.example.com:8883/a2a/v1",
+      "tenant": "com.example/factory-a"
     }
   ],
-  "status": "online",
-  "endpoints": {
-    "requests": "a2a/v1/com.example/production/finance-analyzer-001/requests",
-    "status": "a2a/v1/com.example/production/finance-analyzer-001/status",
-    "events": "a2a/v1/com.example/production/finance-analyzer-001/events"
+  "securitySchemes": {
+    "oauth2": {
+      "oauth2SecurityScheme": {
+        "description": "OAuth2 for agent invocation.",
+        "flows": {
+          "clientCredentials": {
+            "tokenUrl": "https://id.example.com/oauth2/token",
+            "scopes": {
+              "a2a:invoke": "Invoke A2A operations."
+            }
+          }
+        }
+      }
+    }
   },
-  "security": {
-    "methods": ["oauth2.1", "jwt"],
-    "publicKeyPem": "...",
-    "jwksUri": "https://example.com/.well-known/jwks.json",
-    "signingAlg": "EdDSA",
-    "encryptionAlg": "ECDH-ES+A256KW"
-  },
-  "metadata": {
-    "framework": "LangGraph",
-    "model": "gpt-4",
-    "tags": ["finance", "analysis", "production"]
-  },
-  "compliance": {
-    "iso42001": true
-  },
-  "registeredAt": "2026-02-03T10:00:00Z",
-  "lastSeen": "2026-02-03T15:30:00Z"
+  "securityRequirements": [
+    {
+      "schemes": {
+        "oauth2": {
+          "list": ["a2a:invoke"]
+        }
+      }
+    }
+  ],
+  "skills": [
+    {
+      "id": "device-diagnostics",
+      "name": "Device Diagnostics",
+      "description": "Analyzes telemetry and detects device anomalies.",
+      "tags": ["iot", "telemetry", "factory-a"],
+      "examples": [
+        "Detect abnormal vibration from line-7 motor cluster."
+      ]
+    }
+  ]
 }
 ```
 
@@ -147,7 +196,7 @@ with EMQX extensions for MQTT transport and security:
 
 #### 1. Registry Service
 
-A new Erlang service (`emqx_agent_registry`) that:
+A new Erlang service (`emqx_a2a_registry`) that:
 
 - **Indexes Agent Cards**: Maintains an in-memory index of all registered
   agents for fast lookup
@@ -166,7 +215,7 @@ synchronized with retained messages stored in the broker.
 Agents register themselves by publishing a retained message:
 
 ```bash
-Topic: a2a/v1/discovery/com.example/finance-analyzer-001
+Topic: a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
 QoS: 1
 Retain: true
 Payload: <Agent Card JSON>
@@ -185,7 +234,7 @@ Agents discover other agents by subscribing to registry topics:
 Topic: a2a/v1/discovery/com.example/+
 
 # Subscribe to specific agent
-Topic: a2a/v1/discovery/com.example/finance-analyzer-001
+Topic: a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
 
 # Wildcard subscription across organizations (with proper ACLs)
 Topic: a2a/v1/discovery/+/+
@@ -200,7 +249,7 @@ When an agent disconnects ungracefully, its Last Will and Testament (LWT)
 message can clear the retained registration:
 
 ```bash
-Topic: a2a/v1/discovery/com.example/finance-analyzer-001
+Topic: a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
 QoS: 1
 Retain: true
 Payload: null  # Clears the retained message
@@ -215,8 +264,16 @@ The registry standardizes discovery. Agent-to-agent task traffic continues on
 interaction topics described by each Agent Card endpoint.
 
 - **Request/Reply**: Requesters publish to
-  `a2a/v1/{org-id}/{namespace}/{agent-id}/requests` and set MQTT 5 properties:
+  `a2a/v1/request/{org_id}/{unit_id}/{agent_id}` and set MQTT 5 properties:
   `Response Topic`, `Correlation Data`, and user property `a2a-method`.
+- **Response Topic**: Requesters SHOULD provide a routable reply topic in the
+  MQTT 5 `Response Topic` property, with a recommended pattern
+  `a2a/v1/response/{org_id}/{unit_id}/{agent_id}/{reply_suffix}`. Responders publish
+  replies to the provided response topic and echo `Correlation Data`.
+- **Event Topic**: Agents publish asynchronous notifications to
+  `a2a/v1/event/{org_id}/{unit_id}/{agent_id}`. Lifecycle status (for example,
+  online/offline/heartbeat) is treated as event data rather than a separate
+  status channel.
 - **Streaming**: Long-running tasks can emit partial outputs to the response
   topic, with progress metadata in user properties.
 - **Payload format**: A2A task payloads SHOULD follow JSON-RPC 2.0 with
@@ -224,34 +281,34 @@ interaction topics described by each Agent Card endpoint.
 
 #### 6. CLI Management
 
-New `emqx_ctl agent-registry` commands:
+New `emqx_ctl a2a-registry` commands:
 
 ```bash
 # List all registered agents
-emqx_ctl agent-registry list
+emqx_ctl a2a-registry list
 
 # List agents with filters
-emqx_ctl agent-registry list --org com.example --status online
+emqx_ctl a2a-registry list --org com.example --status online
 
 # Get specific agent details
-emqx_ctl agent-registry get com.example finance-analyzer-001
+emqx_ctl a2a-registry get com.example factory-a iot-ops-agent-001
 
 # Register/update agent manually (admin override)
-emqx_ctl agent-registry register <agent-card.json>
+emqx_ctl a2a-registry register <agent-card.json>
 
 # Delete agent registration
-emqx_ctl agent-registry delete com.example finance-analyzer-001
+emqx_ctl a2a-registry delete com.example factory-a iot-ops-agent-001
 
 # Search agents by capability
-emqx_ctl agent-registry search --capability text-analysis
+emqx_ctl a2a-registry search --capability device-diagnostics
 
 # Show registry statistics
-emqx_ctl agent-registry stats
+emqx_ctl a2a-registry stats
 ```
 
 #### 7. Dashboard UI
 
-New "Agent Registry" section in the EMQX Dashboard:
+New "A2A Registry" section in the EMQX Dashboard:
 
 - **Agent List View**: Table showing all registered agents with columns:
   - Agent ID
@@ -289,8 +346,16 @@ New "Agent Registry" section in the EMQX Dashboard:
    before acceptance, preventing malformed or malicious registrations.
 
 3. **Message-Layer Trust**: Agent Cards MAY include public key or `jwksUri`
-   metadata. Clients can use this to verify JWS signatures and optionally apply
-   JWE payload encryption for dedicated receivers.
+   metadata. This proposal adopts a simplified broker policy:
+   - If `trusted_jkus` is configured (non-empty), Agent Card registration MUST
+     include `jwksUri` that matches the trusted list, otherwise registration is
+     rejected.
+   - If `trusted_jkus` is not configured (empty), EMQX does not enforce JKU
+     trust checks at registration time (permissive mode).
+   - `https` and TLS certificate validation are REQUIRED when retrieving JWKS.
+
+   This keeps registry-side security simple and explicit while avoiding partial
+   inferences from untrusted runtime message headers.
 
 4. **Admin Override**: Administrators can manage registrations directly,
    bypassing normal MQTT publication (useful for manual cleanup or
@@ -301,6 +366,11 @@ New "Agent Registry" section in the EMQX Dashboard:
 
 6. **Audit Logging**: All registry operations (registration, update, deletion)
    are logged for audit purposes.
+
+7. **Peer-to-Peer Payload Security**: EMQX provides discovery and registration
+   policy, but end-to-end message confidentiality/integrity between agents is a
+   peer responsibility. Publishers SHOULD encrypt sensitive payloads using the
+   subscriber/receiver public key and receivers SHOULD verify sender signatures.
 
 ### Performance Considerations
 
@@ -322,7 +392,7 @@ New "Agent Registry" section in the EMQX Dashboard:
 MQX SHOULD document these defaults:
 
 1. Discovery / Agent Card retained publications: QoS 1
-2. Status / heartbeat updates: QoS 0
+2. Event / heartbeat updates: QoS 0
 3. Task request delegation: QoS 1
 4. Final artifact/result delivery: QoS 1
 5. Streaming token-by-token updates: QoS 0
@@ -334,8 +404,8 @@ MQX SHOULD document these defaults:
 Add to `emqx.conf`:
 
 ```hocon
-agent_registry {
-  ## Enable/disable the agent registry feature
+a2a_registry {
+  ## Enable/disable the a2a registry feature
   enable = false
 
   ## Topic prefix pattern for registry topics
@@ -362,6 +432,18 @@ agent_registry {
   ## Require security metadata in Agent Card (public key or jwksUri)
   require_security_metadata = false
 
+  ## Trusted JKU allowlist for Agent Card registration.
+  ## If non-empty, card jwksUri must match one entry.
+  ## If empty, EMQX runs in permissive mode and does not enforce JKU trust checks.
+  ## Prefer exact https JWKS URIs; prefix/domain patterns are implementation-defined.
+  trusted_jkus = [
+    "https://agents.example.com/.well-known/jwks.json",
+    "https://keys.example.org/agents/"
+  ]
+
+  ## Enable HTTPS/TLS validation when fetching JWKS from jwksUri
+  verify_jku_tls = true
+
   ## Enable audit logging for registry operations
   audit_log = true
 }
@@ -372,15 +454,21 @@ agent_registry {
 Registry topics should be protected by ACL rules. Example:
 
 ```bash
-# Allow agents to register themselves
-{allow, {user, "agent-*"}, publish, ["a2a/v1/discovery/+/+"]}.
+# Recommended username format: {org_id}/{unit_id}/{agent_id}
+# Default A2A rules (can be placed in default acl.conf):
 
-# Allow agents to discover other agents
-{allow, {user, "agent-*"}, subscribe, ["a2a/v1/discovery/+/+"]}.
+# Allow all authenticated clients to discover cards
+{allow, all, subscribe, ["a2a/v1/discovery/#"]}.
 
-# Allow admins full access
-{allow, {user, "admin"}, all, ["a2a/v1/discovery/#"]}.
+# Allow all authenticated clients to send requests
+{allow, all, publish, ["a2a/v1/request/#"]}.
+
+# Allow each client to receive only its own responses
+{allow, all, subscribe, ["a2a/v1/response/${username}/#"]}.
 ```
+
+These are baseline defaults. Operators can add stricter or broader rules in
+`acl.conf` or other ACL backends based on deployment requirements.
 
 ## Backwards Compatibility
 
@@ -408,7 +496,7 @@ This feature is fully backward compatible:
 
 ## Document Changes
 
-1. **User Guide**: New section "Agent Registry" covering:
+1. **User Guide**: New section "A2A Registry" covering:
    - Overview and use cases
    - Agent registration via MQTT
    - Agent discovery patterns
@@ -447,6 +535,10 @@ This feature is fully backward compatible:
    - LWT cleanup on disconnect
    - ACL enforcement
    - MQTT 5 properties (`response_topic`, `correlation_data`, user properties)
+   - Registration trust policy with `trusted_jkus`
+     - card `jwksUri` must match allowlist when configured
+     - unmatched `jwksUri` registration is rejected
+     - empty `trusted_jkus` behaves as permissive mode
 
 3. **CLI Commands**:
    - All command variations
@@ -509,7 +601,7 @@ This feature is fully backward compatible:
 **Proposal**: Store Agent Cards in a separate database (PostgreSQL, MongoDB)
 instead of retained messages.
 
-**Why Declined**: 
+**Why Declined**:
 - Introduces external dependencies and operational complexity
 - Breaks the "pure MQTT" philosophy—agents must use MQTT for everything
 - Requires additional infrastructure and maintenance
@@ -547,9 +639,9 @@ EMQX via APIs.
 - Security risk (malformed data could break consumers)
 - Schema validation ensures interoperability and data quality
 
-### Alternative 5: Use `$agent-registry/...` as the default namespace
+### Alternative 5: Use `$a2a-registry/...` as the default prefix
 
-**Proposal**: Keep the previous `$agent-registry/v1/{org-id}/{agent-id}` default.
+**Proposal**: Keep the previous `$a2a-registry/v1/{org_id}/{agent_id}` default.
 
 **Why Declined**:
 - Diverges from the proposed cross-vendor A2A topic model
