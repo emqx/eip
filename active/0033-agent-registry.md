@@ -257,19 +257,18 @@ keeps the retained card and updates extension status metadata:
 This ensures discovery remains stable while liveness is visible directly in the
 retained card.
 
-#### 5. Interaction Modalities with MQTT 5.0
+#### 5. Interaction Modalities (MQTT v5 Required)
 
 The registry standardizes discovery. Agent-to-agent task traffic continues on
 interaction topics described by each Agent Card endpoint.
 
 - **Request/Reply**: Requesters publish to
-  `a2a/v1/request/{org_id}/{unit_id}/{agent_id}` and MAY set MQTT 5 properties
-  `Response Topic` and `Correlation Data` (for example, when not following the
-  default request/reply topic scheme), plus user property `a2a-method`.
-- **Response Topic**: Requesters SHOULD provide a routable reply topic in the
+  `a2a/v1/request/{org_id}/{unit_id}/{agent_id}` and MUST set MQTT 5 properties
+  `Response Topic` and `Correlation Data`, plus user property `a2a-method`.
+- **Response Topic**: Requesters MUST provide a routable reply topic in the
   MQTT 5 `Response Topic` property, with a recommended pattern
   `a2a/v1/reply/{org_id}/{unit_id}/{agent_id}/{reply_suffix}`. Responders publish
-  replies to the provided reply topic and echo `Correlation Data`.
+  replies to the provided reply topic and MUST echo `Correlation Data`.
 - **Event Topic**: Agents publish asynchronous notifications to
   `a2a/v1/event/{org_id}/{unit_id}/{agent_id}`. Lifecycle status (for example,
   online/offline/heartbeat) is treated as event data rather than a separate
