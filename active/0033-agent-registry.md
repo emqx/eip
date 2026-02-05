@@ -102,7 +102,7 @@ the standardized interaction path:
 a2a/v1/{method}/{org_id}/{unit_id}/{agent_id}
 ```
 
-Where `{method}` is typically one of `request`, `response`, or `event`.
+Where `{method}` is typically one of `request`, `reply`, or `event`.
 For flexibility, EMQX allows configurable prefixes, but the default profile is
 the standardized A2A topic model above.
 
@@ -263,17 +263,18 @@ The registry standardizes discovery. Agent-to-agent task traffic continues on
 interaction topics described by each Agent Card endpoint.
 
 - **Request/Reply**: Requesters publish to
-  `a2a/v1/request/{org_id}/{unit_id}/{agent_id}` and set MQTT 5 properties:
-  `Response Topic`, `Correlation Data`, and user property `a2a-method`.
+  `a2a/v1/request/{org_id}/{unit_id}/{agent_id}` and MAY set MQTT 5 properties
+  `Response Topic` and `Correlation Data` (for example, when not following the
+  default request/reply topic scheme), plus user property `a2a-method`.
 - **Response Topic**: Requesters SHOULD provide a routable reply topic in the
   MQTT 5 `Response Topic` property, with a recommended pattern
-  `a2a/v1/response/{org_id}/{unit_id}/{agent_id}/{reply_suffix}`. Responders publish
-  replies to the provided response topic and echo `Correlation Data`.
+  `a2a/v1/reply/{org_id}/{unit_id}/{agent_id}/{reply_suffix}`. Responders publish
+  replies to the provided reply topic and echo `Correlation Data`.
 - **Event Topic**: Agents publish asynchronous notifications to
   `a2a/v1/event/{org_id}/{unit_id}/{agent_id}`. Lifecycle status (for example,
   online/offline/heartbeat) is treated as event data rather than a separate
   status channel.
-- **Streaming**: Long-running tasks can emit partial outputs to the response
+- **Streaming**: Long-running tasks can emit partial outputs to the reply
   topic, with progress metadata in user properties.
 - **Payload format**: A2A task payloads SHOULD follow JSON-RPC 2.0 with
   `content-type = application/json` and `payload format indicator = 1`.
@@ -341,7 +342,7 @@ New "A2A Registry" section in the EMQX Dashboard:
 
 - **Out of scope in first iteration**:
   - Universal agent client
-  - Request/response test console
+  - Request/reply test console
   - Metrics and debugging panels
   - Batch operations
 
@@ -468,7 +469,7 @@ Registry topics should be protected by ACL rules. Example:
 {allow, all, publish, ["a2a/v1/request/#"]}.
 
 # Allow each client to receive only its own responses
-{allow, all, subscribe, ["a2a/v1/response/${username}/#"]}.
+{allow, all, subscribe, ["a2a/v1/reply/${username}/#"]}.
 ```
 
 These are baseline defaults. Operators can add stricter or broader rules in
@@ -601,6 +602,34 @@ This feature is fully backward compatible:
    - Deploy with actual agent frameworks (LangGraph, CrewAI)
    - Test with production-like agent counts
    - Verify interoperability with A2A protocol implementations
+
+## Future Work
+
+1. **JSON-RPC Gateway**:
+   - Add an HTTP JSON-RPC gateway to improve A2A-over-MQTT interoperability.
+   - Clarify this is JSON-RPC over HTTP (not a REST resource model).
+
+2. **Streaming Transports for Interop**:
+   - Add SSE support for server-to-client streaming over HTTP JSON-RPC flows.
+   - Explore WebSocket transport/subprotocol support for bidirectional realtime
+     communication.
+
+3. **Request/Reply/Event Awareness for Metrics**:
+   - Extend registry observability beyond cards.
+   - MVP is card-aware only; future versions should inspect request/reply
+     and event flows for richer metrics and operational insights.
+
+4. **Cross-Broker Interoperability Test Suite**:
+   - Define conformance and interoperability tests for topic profile,
+     signatures, lifecycle status behavior, and transport parity.
+
+5. **Progressive Policy Engine**:
+   - Add policy hooks for per-organization controls (registration policy,
+     signing requirements, rate limits, and extension allowlists).
+
+6. **Federated Discovery**:
+   - Explore controlled cross-cluster/cross-region registry federation with
+     explicit trust boundaries and conflict resolution.
 
 ## Declined Alternatives
 
