@@ -281,29 +281,26 @@ interaction topics described by each Agent Card endpoint.
 
 #### 6. CLI Management
 
-New `emqx_ctl a2a-registry` commands:
+New `emqx ctl a2a-registry` commands:
 
 ```bash
 # List all registered agents
-emqx_ctl a2a-registry list
+emqx ctl a2a-registry list
 
 # List agents with filters
-emqx_ctl a2a-registry list --org com.example --status online
+emqx ctl a2a-registry list --org com.example --status online
 
 # Get specific agent details
-emqx_ctl a2a-registry get com.example factory-a iot-ops-agent-001
+emqx ctl a2a-registry get com.example factory-a iot-ops-agent-001
 
 # Register/update agent manually (admin override)
-emqx_ctl a2a-registry register <agent-card.json>
+emqx ctl a2a-registry register <agent-card.json>
 
 # Delete agent registration
-emqx_ctl a2a-registry delete com.example factory-a iot-ops-agent-001
-
-# Search agents by capability
-emqx_ctl a2a-registry search --capability device-diagnostics
+emqx ctl a2a-registry delete com.example factory-a iot-ops-agent-001
 
 # Show registry statistics
-emqx_ctl a2a-registry stats
+emqx ctl a2a-registry stats
 ```
 
 #### 7. Dashboard UI
@@ -398,13 +395,12 @@ New "A2A Registry" section in the EMQX Dashboard:
 
 ### Recommended QoS Profile
 
-MQX SHOULD document these defaults:
+EMQX SHOULD document these defaults:
 
-1. Discovery / Agent Card retained publications: QoS 1
-2. Event / heartbeat updates: QoS 0
-3. Task request delegation: QoS 1
-4. Final artifact/result delivery: QoS 1
-5. Streaming token-by-token updates: QoS 0
+- Discovery / Agent Card retained publications: QoS 1
+- Request: QoS 1
+- Reply: QoS 1
+- Event: QoS 0
 
 ## Configuration Changes
 
@@ -417,10 +413,6 @@ a2a_registry {
   ## Enable/disable the a2a registry feature
   enable = false
 
-  ## Topic prefix pattern for registry topics
-  ## Default: "a2a/v1/discovery/{org_id}/{unit_id}/{agent_id}"
-  topic_prefix = "a2a/v1/discovery"
-
   ## Maximum size of Agent Card payload (bytes)
   max_card_size = 65536
 
@@ -430,11 +422,10 @@ a2a_registry {
   ## Enable schema validation
   validate_schema = true
 
-  ## Path to custom Agent Card JSON schema (optional)
-  ## If not specified, uses built-in schema
-  schema_path = ""
+  ## EMQX JSON schema registry reference
+  schema_name= ""
 
-  ## Require security metadata in Agent Card (public key or jwksUri)
+  ## Require security metadata in Agent Card (jwksUri)
   require_security_metadata = false
 
   ## Trusted JKU allowlist for Agent Card registration.
@@ -448,9 +439,6 @@ a2a_registry {
 
   ## Enable HTTPS/TLS validation when fetching JWKS from jwksUri
   verify_jku_tls = true
-
-  ## Enable audit logging for registry operations
-  audit_log = true
 }
 ```
 
@@ -463,13 +451,11 @@ Registry topics should be protected by ACL rules. Example:
 # Default A2A rules (can be placed in default acl.conf):
 
 # Allow all authenticated clients to discover cards
-{allow, all, subscribe, ["a2a/v1/discovery/#"]}.
+# Allow each client to receive only its own responses
+{allow, all, subscribe, ["a2a/v1/discovery/#", "a2a/v1/reply/${username}/#"]}.
 
 # Allow all authenticated clients to send requests
 {allow, all, publish, ["a2a/v1/request/#"]}.
-
-# Allow each client to receive only its own responses
-{allow, all, subscribe, ["a2a/v1/reply/${username}/#"]}.
 ```
 
 These are baseline defaults. Operators can add stricter or broader rules in
@@ -486,7 +472,7 @@ This feature is fully backward compatible:
    behavior or retained message handling. It adds a management layer on top of
    standard MQTT retained messages.
 
-3. **Topic Isolation**: Registry topics default to `a2a/v1/discovery`, which
+3. **Topic Isolation**: Registry topics default to `a2a/v1/`, which
    keeps agent discovery traffic separate from existing application topics.
 
 4. **Graceful Degradation**: If the registry service is unavailable, MQTT
@@ -520,10 +506,7 @@ This feature is fully backward compatible:
   - Python agent registration
   - JavaScript agent discovery
   - CLI management workflows
-   - Dashboard JSON import/export workflow
-
-5. **Migration Guide**: Document how to migrate from custom discovery to Agent
-   Registry
+  - Dashboard JSON import/export workflow
 
 ## Testing Suggestions
 
@@ -541,7 +524,6 @@ This feature is fully backward compatible:
    - Offline transition updates retained card extension status to `offline`
    - Reconnect transition updates retained card extension status to `online`
    - ACL enforcement
-   - MQTT 5 properties (`response_topic`, `correlation_data`, user properties)
    - Registration trust policy with `trusted_jkus`
      - card `jwksUri` must match allowlist when configured
      - unmatched `jwksUri` registration is rejected
