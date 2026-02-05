@@ -213,7 +213,7 @@ Agents register themselves by publishing a retained message:
 
 ```bash
 Topic: a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
-QoS: 1
+QoS: 0/1
 Retain: true
 Payload: <Agent Card JSON>
 ```
@@ -397,10 +397,10 @@ New "A2A Registry" section in the EMQX Dashboard:
 
 EMQX SHOULD document these defaults:
 
-- Discovery / Agent Card retained publications: QoS 1
-- Request: QoS 1
-- Reply: QoS 1
-- Event: QoS 0
+- Discovery / Agent Card retained publications: QoS 0 or 1
+- Request: QoS 0/1
+- Reply: QoS 0/1
+- Event: QoS 0/1
 
 ## Configuration Changes
 
