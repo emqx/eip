@@ -6,6 +6,7 @@
 * 2026-02-03: @codex Align with A2A MQTT profile and tighten EMQX wording
 * 2026-02-05: @codex Add trusted JKU policy for runtime signed messages
 * 2026-02-05: @codex Simplify to trusted-JKU-list-or-permissive model
+* 2026-02-05: @codex Add Dashboard UI MVP scope (simple CRUD-first design)
 
 ## Abstract
 
@@ -310,32 +311,41 @@ emqx_ctl a2a-registry stats
 
 New "A2A Registry" section in the EMQX Dashboard:
 
-- **Agent List View**: Table showing all registered agents with columns:
-  - Agent ID
-  - Organization
-  - Name/Description
-  - Status (online/offline)
-  - Capabilities
-  - Last Seen
-  - Actions (view, edit, delete)
+- **MVP Scope (CRUD-first)**:
+  - View registered cards
+  - Manually add/update/delete cards
+  - Inspect card details (formatted + raw JSON)
 
-- **Agent Detail View**: Full Agent Card display with:
-  - Complete JSON view
-  - Formatted metadata
-  - Endpoint information
-  - Security/authentication details
-  - Registration history
+- **List View (simple, practical)**:
+  - Columns: `org_id`, `unit_id`, `agent_id`, `name`, `version`, `updated_at`
+  - Row actions: `view`, `edit`, `delete`
+  - Controls: search (`org_id`, `unit_id`, `agent_id`, `name`), refresh,
+    pagination (default page size 20), last-refresh timestamp
 
-- **Search and Filter**: 
-  - Filter by organization, status, capability type
-  - Full-text search across agent names and descriptions
-  - Tag-based filtering
+- **Card Detail View**:
+  - Read-only metadata summary
+  - Formatted JSON preview
+  - Raw JSON tab with copy action
 
-- **Management Actions**:
-  - Manual registration/update
-  - Delete registration
-  - Force status update
-  - Export agent list
+- **Add/Update Editor**:
+  - JSON editor as primary input
+  - Validate-before-save workflow (client parse + server schema validation)
+  - Success/error toast with clear backend reason
+
+- **Delete Safety**:
+  - Confirmation requires typing full identity:
+    `{org_id}/{unit_id}/{agent_id}`
+
+- **Small but important MVP features**:
+  - JSON template starter for new cards
+  - Validate without persisting
+  - Import local JSON and export card JSON
+
+- **Out of scope in first iteration**:
+  - Universal agent client
+  - Request/response test console
+  - Metrics and debugging panels
+  - Batch operations
 
 ### Security Considerations
 
@@ -503,18 +513,19 @@ This feature is fully backward compatible:
    - Best practices
 
 2. **Admin Guide**: New section covering:
-   - Configuration options
-   - CLI commands reference
-   - Dashboard usage
-   - Troubleshooting
+  - Configuration options
+  - CLI commands reference
+  - Dashboard CRUD usage (MVP)
+  - Troubleshooting
 
 3. **API Reference**: Document the Agent Card schema and validation rules
    including security metadata fields and MQTT 5 property mapping.
 
 4. **Examples**: Add example code for:
-   - Python agent registration
-   - JavaScript agent discovery
-   - CLI management workflows
+  - Python agent registration
+  - JavaScript agent discovery
+  - CLI management workflows
+   - Dashboard JSON import/export workflow
 
 5. **Migration Guide**: Document how to migrate from custom discovery to Agent
    Registry
@@ -579,10 +590,12 @@ This feature is fully backward compatible:
 ### Manual Testing
 
 1. **Dashboard UI**:
-   - Visual verification of agent list
+   - Visual verification of list/detail views
    - Search and filter functionality
-   - Agent detail view
-   - Manual registration/update/delete
+   - Manual add/update/delete
+   - Delete confirmation guard
+   - Validate-before-save behavior
+   - Import/export JSON behavior
 
 2. **CLI Usability**:
    - Command completion
