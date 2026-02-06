@@ -8,6 +8,7 @@
 * 2026-02-05: @codex Simplify to trusted-JKU-list-or-permissive model
 * 2026-02-05: @codex Add Dashboard UI MVP scope (simple CRUD-first design)
 * 2026-02-05: @codex Add broker-managed status field and remove cleanup flow
+* 2026-02-06: @codex Move broker-managed status to MQTT v5 User Properties and align QoS profile
 
 ## Abstract
 
@@ -70,8 +71,9 @@ messages while providing enhanced functionality through:
 2. **Registry Service**: A new internal service that indexes and validates
    registrations and keeps query state in sync with retained messages
 3. **Admin Interfaces**: CLI commands and Dashboard UI for registry management
-4. **Automatic Lifecycle Reflection**: Broker-managed status updates in card
-   extension metadata (`online`/`offline`)
+4. **Automatic Lifecycle Reflection**: Broker-managed status attached via MQTT
+   v5 User Properties (`a2a-status`, `a2a-status-source`) when forwarding
+   discovery messages
 5. **Security Metadata**: Agent Cards include public key / JWKS metadata for
    optional message signing and encryption policies
 
@@ -131,8 +133,7 @@ with MQTT extensions for security:
         "params": {
           "securityMetadata": {
             "jwksUri": "https://keys.example.com/.well-known/jwks.json"
-          },
-          "status": "online"
+          }
         }
       }
     ]
@@ -185,9 +186,9 @@ with MQTT extensions for security:
 }
 ```
 
-This proposal defines `status` as an extension field in the MQTT profile
-extension params. Allowed values are `online` and `offline`, and the value is
-broker-managed (not client-authoritative).
+Broker-managed lifecycle status is not stored in Agent Card payload fields.
+Instead, EMQX may attach status as MQTT v5 User Properties when forwarding
+discovery publications to subscribers.
 
 ### Core Components
 
@@ -200,7 +201,7 @@ A new Erlang service (`emqx_a2a_registry`) that:
 - **Validates Registrations**: Enforces schema validation on incoming Agent
   Cards
 - **Manages Lifecycle**: Tracks agent liveness through connection state and
-  updates extension status metadata
+  computes broker-managed status for outbound discovery deliveries
 - **Provides Query API**: Exposes internal APIs for CLI and Dashboard to query
   the registry
 
@@ -213,7 +214,7 @@ Agents register themselves by publishing a retained message:
 
 ```bash
 Topic: a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
-QoS: 0/1
+QoS: 1
 Retain: true
 Payload: <Agent Card JSON>
 ```
@@ -221,10 +222,9 @@ Payload: <Agent Card JSON>
 EMQX intercepts publications to registry topics, validates the payload,
 and updates the registry index.
 
-For newly accepted cards, EMQX persists the retained card with extension status
-set to `online` regardless of whether the incoming payload includes this field.
-Invalid registrations are rejected with a PUBACK reason code indicating the
-validation error.
+For newly accepted cards, EMQX persists the retained card payload without
+injecting broker-managed status fields. Invalid registrations are rejected with
+a PUBACK reason code indicating the validation error.
 
 #### 3. Discovery via MQTT
 
@@ -244,18 +244,20 @@ Topic: a2a/v1/discovery/+/+
 Upon subscription, agents immediately receive all retained Agent Cards matching
 the subscription pattern, providing instant discovery.
 
-#### 4. Broker-Managed Status Extension
+#### 4. Broker-Managed Status via MQTT User Properties
 
-EMQX does not auto-clean retained cards when an agent disconnects. Instead, it
-keeps the retained card and updates extension status metadata:
+EMQX does not auto-clean retained cards when an agent disconnects and does not
+mutate Agent Card payloads for status.
 
-- On accepted registration/update: status is persisted as `online`
-- When agent goes offline: status is updated to `offline`
-- When the same agent reconnects and is active again: status is updated back to
-  `online`
+To expose liveness, EMQX may attach MQTT v5 User Properties when forwarding
+discovery messages to subscribers:
 
-This ensures discovery remains stable while liveness is visible directly in the
-retained card.
+- `a2a-status = online` when registration is accepted or agent is active
+- `a2a-status = offline` when agent is observed offline
+- `a2a-status-source = broker`
+
+This preserves stable retained discovery payloads while still exposing
+broker-computed liveness to subscribers.
 
 #### 5. Interaction Modalities (MQTT v5 Required)
 
@@ -263,16 +265,17 @@ The registry standardizes discovery. Agent-to-agent task traffic continues on
 interaction topics described by each Agent Card endpoint.
 
 - **Request/Reply**: Requesters publish to
-  `a2a/v1/request/{org_id}/{unit_id}/{agent_id}` and MUST set MQTT 5 properties
-  `Response Topic` and `Correlation Data`, plus user property `a2a-method`.
+  `a2a/v1/request/{org_id}/{unit_id}/{agent_id}` using QoS 1 and MUST set MQTT
+  5 properties `Response Topic` and `Correlation Data`, plus user property
+  `a2a-method`.
 - **Response Topic**: Requesters MUST provide a routable reply topic in the
   MQTT 5 `Response Topic` property, with a recommended pattern
   `a2a/v1/reply/{org_id}/{unit_id}/{agent_id}/{reply_suffix}`. Responders publish
-  replies to the provided reply topic and MUST echo `Correlation Data`.
+  replies to the provided reply topic using QoS 1 and MUST echo
+  `Correlation Data`.
 - **Event Topic**: Agents publish asynchronous notifications to
-  `a2a/v1/event/{org_id}/{unit_id}/{agent_id}`. Lifecycle status (for example,
-  online/offline/heartbeat) is treated as event data rather than a separate
-  status channel.
+  `a2a/v1/event/{org_id}/{unit_id}/{agent_id}`. Events MAY be published using
+  QoS 0.
 - **Streaming**: Long-running tasks can emit partial outputs to the reply
   topic, with progress metadata in user properties.
 - **Payload format**: A2A task payloads SHOULD follow JSON-RPC 2.0 with
@@ -396,10 +399,10 @@ New "A2A Registry" section in the EMQX Dashboard:
 
 EMQX SHOULD document these defaults:
 
-- Discovery / Agent Card retained publications: QoS 0 or 1
-- Request: QoS 0/1
-- Reply: QoS 0/1
-- Event: QoS 0/1
+- Discovery / Agent Card retained publications: QoS 1
+- Request: QoS 1
+- Reply: QoS 1
+- Event: QoS 0 (MAY use higher QoS if required by deployment policy)
 
 ## Configuration Changes
 
@@ -452,10 +455,10 @@ Registry topics should be protected by ACL rules. Example:
 %% Allow all authenticated clients to discover cards
 %% Allow all clients to receive only its own replies
 %% Allow all clients to receive events from all
-{allow, all, subscribe, ["a2a/v1/discovery/#", "a2a/v1/reply/${username}/#", "$a2a/v1/event/#"]}.
+{allow, all, subscribe, ["a2a/v1/discovery/#", "a2a/v1/reply/${username}/#", "a2a/v1/event/#"]}.
 
 %% Allow all agents to register to self topic, and send event to self topic
-{allow, all, publish, ["a2a/v1/discover/${username}/#", "a2a/v1/event/${username}/#"]}.
+{allow, all, publish, ["a2a/v1/discovery/${username}/#", "a2a/v1/event/${username}/#"]}.
 
 %% Allow all to request all.
 {allow, all, publish, ["a2a/v1/request/#"]}.
@@ -473,7 +476,7 @@ This feature is fully backward compatible:
 
 2. **Non-intrusive**: The feature does not modify existing MQTT protocol
    behavior or retained message handling. It adds a management layer on top of
-   standard MQTT retained messages.
+   standard MQTT retained messages and does not mutate Agent Card payloads.
 
 3. **Topic Isolation**: Registry topics default to `a2a/v1/`, which
    keeps agent discovery traffic separate from existing application topics.
@@ -503,7 +506,8 @@ This feature is fully backward compatible:
   - Troubleshooting
 
 3. **API Reference**: Document the Agent Card schema and validation rules
-   including security metadata fields and MQTT 5 property mapping.
+   including security metadata fields, MQTT 5 request/reply mapping, QoS
+   requirements, and broker status user properties.
 
 4. **Examples**: Add example code for:
   - Python agent registration
@@ -518,14 +522,15 @@ This feature is fully backward compatible:
 1. **Registry Service**:
    - Agent Card validation (valid/invalid schemas)
    - Index operations (add, update, delete, query)
-   - Lifecycle management (online/offline status updates)
+   - Lifecycle management (online/offline state derivation for status properties)
    - Rate limiting enforcement
 
 2. **MQTT Integration**:
    - Registration via PUBLISH with RETAIN flag
    - Discovery via SUBSCRIBE receiving retained messages
-   - Offline transition updates retained card extension status to `offline`
-   - Reconnect transition updates retained card extension status to `online`
+   - Discovery forwards include `a2a-status=offline` on offline transition
+   - Discovery forwards include `a2a-status=online` on reconnect transition
+   - Retained Agent Card payload remains unchanged across lifecycle transitions
    - ACL enforcement
    - Registration trust policy with `trusted_jkus`
      - card `jwksUri` must match allowlist when configured
@@ -543,7 +548,8 @@ This feature is fully backward compatible:
    - Agent publishes registration
    - Another agent discovers it via subscription
    - Admin views it in Dashboard
-   - Agent disconnects, status changes to offline in retained card
+   - Agent disconnects, discovery subscribers receive broker status
+     user property `a2a-status=offline` while payload remains unchanged
 
 2. **Multi-Agent Scenario**:
    - Register 1000 agents
@@ -606,7 +612,7 @@ This feature is fully backward compatible:
 
 4. **Cross-Broker Interoperability Test Suite**:
    - Define conformance and interoperability tests for topic profile,
-     signatures, lifecycle status behavior, and transport parity.
+     signatures, broker status user property behavior, and transport parity.
 
 5. **Progressive Policy Engine**:
    - Add policy hooks for per-organization controls (registration policy,
