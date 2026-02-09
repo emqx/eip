@@ -322,10 +322,11 @@ interaction topics described by each Agent Card endpoint.
 - **Event Topic**: Agents publish asynchronous notifications to
   `a2a/v1/event/{org_id}/{unit_id}/{agent_id}`. Events MAY be published using
   QoS 0.
-- **Optional Shared Pool Dispatch**: Requesters MAY publish to
-  `a2a/v1/request/{org_id}/{unit_id}/pool/{pool_id}`. Pool members consume via
-  shared subscriptions and responders MUST include `a2a-responder-agent-id` in
-  pooled responses so requesters can route follow-ups to the concrete responder.
+- **Optional Shared Pool Dispatch**: Requesters MAY publish to shared pool
+  request topics defined by the A2A-over-MQTT transport profile. Pool members
+  consume via shared subscriptions and responders MUST include
+  `a2a-responder-agent-id` in pooled responses so requesters can route
+  follow-ups to the concrete responder.
 - **OAuth 2.0/OIDC**: When required by the Agent Card, requesters MUST include
   `a2a-authorization: Bearer <access_token>` as an MQTT User Property on each
   request; responders validate tokens before processing.
