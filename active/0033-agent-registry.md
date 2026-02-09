@@ -414,10 +414,21 @@ New "A2A Registry" section in the EMQX Dashboard:
 1. **ACL Integration**: Registry topics are protected by EMQX ACLs. Only
    authorized clients can publish to registry topics.
 
-2. **Schema Validation**: All Agent Cards are validated against a JSON schema
+2. **A2A Authorization Policy Levels**: EMQX SHOULD support A2A-specific
+   authorization policies applied **after** generic ACL checks. These policies
+   scope agent-to-agent interaction to:
+   - **Fully trusted**: no additional A2A scoping beyond ACLs
+   - **Within org**: requests and replies MUST be constrained to the same
+     `{org_id}`
+   - **Within unit**: requests and replies MUST be constrained to the same
+     `{org_id}/{unit_id}`
+   This allows strict organizational boundaries while still permitting explicit
+   ACL exceptions.
+
+3. **Schema Validation**: All Agent Cards are validated against a JSON schema
    before acceptance, preventing malformed or malicious registrations.
 
-3. **Message-Layer Trust**: Agent Cards MAY include public key or `jwksUri`
+4. **Message-Layer Trust**: Agent Cards MAY include public key or `jwksUri`
    metadata. This proposal adopts a simplified broker policy:
    - If `trusted_jkus` is configured (non-empty), Agent Card registration MUST
      include `jwksUri` that matches the trusted list, otherwise registration is
@@ -429,17 +440,17 @@ New "A2A Registry" section in the EMQX Dashboard:
    This keeps registry-side security simple and explicit while avoiding partial
    inferences from untrusted runtime message headers.
 
-4. **Admin Override**: Administrators can manage registrations directly,
+5. **Admin Override**: Administrators can manage registrations directly,
    bypassing normal MQTT publication (useful for manual correction or
    administrative control).
 
-5. **Rate Limiting**: Registration updates are rate-limited to prevent abuse
+6. **Rate Limiting**: Registration updates are rate-limited to prevent abuse
    and DoS attacks.
 
-6. **Audit Logging**: All registry operations (registration, update, deletion)
+7. **Audit Logging**: All registry operations (registration, update, deletion)
    are logged for audit purposes.
 
-7. **Peer-to-Peer Payload Security**: EMQX provides discovery and registration
+8. **Peer-to-Peer Payload Security**: EMQX provides discovery and registration
    policy, but end-to-end message confidentiality/integrity between agents is a
    peer responsibility. For untrusted broker environments, agents SHOULD use
    the A2A-over-MQTT untrusted-broker security profile (`ubsp-v1`) with
@@ -511,29 +522,6 @@ a2a_registry {
   verify_jku_tls = true
 }
 ```
-
-### ACL Configuration
-
-Registry topics should be protected by ACL rules. Example:
-
-```bash
-%% Recommended username format: {org_id}/{unit_id}/{agent_id}
-%% Default A2A rules (can be placed in default acl.conf):
-
-%% Allow all authenticated clients to discover cards
-%% Allow all clients to receive only its own replies
-%% Allow all clients to receive events from all
-{allow, all, subscribe, ["a2a/v1/discovery/#", "a2a/v1/reply/${username}/#", "a2a/v1/event/#"]}.
-
-%% Allow all agents to register to self topic, and send event to self topic
-{allow, all, publish, ["a2a/v1/discovery/${username}/#", "a2a/v1/event/${username}/#"]}.
-
-%% Allow all to request all.
-{allow, all, publish, ["a2a/v1/request/#"]}.
-```
-
-These are baseline defaults. Operators can add stricter or broader rules in
-`acl.conf` or other ACL backends based on deployment requirements.
 
 ## Backwards Compatibility
 
