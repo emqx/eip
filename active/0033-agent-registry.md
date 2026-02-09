@@ -3,12 +3,12 @@
 ## Changelog
 
 * 2026-02-03: @zmstone/codex Initial draft
-* 2026-02-03: @codex Align with A2A MQTT profile and tighten EMQX wording
+* 2026-02-03: @codex Align with A2A-over-MQTT transport profile and tighten EMQX wording
 * 2026-02-05: @codex Add trusted JKU policy for runtime signed messages
 * 2026-02-05: @codex Simplify to trusted-JKU-list-or-permissive model
 * 2026-02-05: @codex Add Dashboard UI MVP scope (simple CRUD-first design)
 * 2026-02-05: @codex Add broker-managed status field and remove cleanup flow
-* 2026-02-06: @codex Move broker-managed status to MQTT v5 User Properties and align QoS profile
+* 2026-02-06: @codex Move broker-managed status to MQTT v5 User Properties and align QoS defaults
 * 2026-02-09: @codex Align registry guidance with latest A2A-over-MQTT client interop, shared pool dispatch, and security profile updates
 
 ## Abstract
@@ -16,7 +16,7 @@
 This proposal introduces an A2A Registry feature for EMQX that enables
 autonomous AI agents to discover and collaborate through a standardized,
 event-driven MQTT 5.0 mechanism. The registry uses retained Agent Cards on
-A2A-defined discovery topics and aligns with an A2A MQTT profile, including
+A2A-defined discovery topics and aligns with the A2A-over-MQTT transport profile, including
 topic path conventions, MQTT 5 properties, JSON-RPC payload guidance, and
 security metadata for public-key-based trust, plus optional end-to-end payload
 protection for untrusted broker environments.
@@ -27,6 +27,13 @@ administrators can inspect and manage entries through EMQX interfaces. This
 feature addresses scalable agent discovery and avoids N-squared point-to-point
 integration complexity in multi-agent systems, while remaining compatible with
 existing MQTT deployments.
+
+## Terminology and Profiles
+
+- **A2A-over-MQTT transport profile**: The normative transport binding that defines topic model, MQTT 5 properties, and requester/responder behavior.
+- **Discovery topic profile**: The subset of the transport profile that defines retained Agent Card discovery topics and delivery semantics.
+- **Security profile**: An optional mode activated by `a2a-security-profile` that adds extra requirements (for example `ubsp-v1`).
+- When this document says "profile" without qualification, it refers to one of the above. Operational settings use terms like **feature**, **policy**, or **defaults**.
 
 ## Motivation
 
@@ -68,7 +75,7 @@ capabilities, adding a structured layer of management, validation, and
 user-facing interfaces. The registry maintains agent metadata in retained
 messages while providing enhanced functionality through:
 
-1. **A2A Discovery Profile**: Agent Cards are stored as retained messages on
+1. **A2A Discovery Topic Profile**: Agent Cards are stored as retained messages on
    standardized A2A discovery topics
 2. **Registry Service**: A new internal service that indexes and validates
    registrations and keeps query state in sync with retained messages
@@ -84,7 +91,7 @@ messages while providing enhanced functionality through:
 
 ### Topic Structure
 
-Following the A2A MQTT profile, the registry uses this discovery topic
+Following the A2A-over-MQTT transport profile, the registry uses this discovery topic
 hierarchy:
 
 ```
@@ -114,7 +121,7 @@ a2a/v1/{method}/{org_id}/{unit_id}/{agent_id}
 ```
 
 Where `{method}` is typically one of `request`, `reply`, or `event`.
-For flexibility, EMQX allows configurable prefixes, but the default profile is
+For flexibility, EMQX allows configurable prefixes, but the default topic model is
 the standardized A2A topic model above.
 
 Agents MAY also be discovered via HTTP well-known endpoints defined by core A2A
@@ -312,7 +319,7 @@ interaction topics described by each Agent Card endpoint.
   `a2a-recipient-agent-id` (request) or `a2a-responder-agent-id` (response).
 - **Payload format**: Default payloads SHOULD follow JSON-RPC 2.0 with
   `Content Type = application/json` and `Payload Format Indicator = 1` unless
-  an optional profile (for example `ubsp-v1` or binary artifact mode) requires
+  an optional mode (for example `ubsp-v1` or binary artifact mode) requires
   a different content type or payload indicator.
 
 #### 6. CLI Management
@@ -430,7 +437,7 @@ New "A2A Registry" section in the EMQX Dashboard:
 4. **Lazy Loading**: Agent Card details are loaded on-demand for the Dashboard,
    reducing memory footprint.
 
-### Recommended QoS Profile
+### Recommended QoS Defaults
 
 EMQX SHOULD document these defaults (aligned with the A2A-over-MQTT profile):
 
@@ -545,7 +552,7 @@ This feature is fully backward compatible:
 
 3. **API Reference**: Document the Agent Card schema and validation rules
    including security metadata fields, MQTT 5 request/reply mapping, QoS
-   requirements, and broker status user properties, plus optional profiles
+   requirements, and broker status user properties, plus optional modes
    (shared pool dispatch, binary artifact mode, and `ubsp-v1`).
 
 4. **Examples**: Add example code for:
@@ -571,7 +578,7 @@ This feature is fully backward compatible:
      and event flows for richer metrics and operational insights.
 
 4. **Cross-Broker Interoperability Test Suite**:
-   - Define conformance and interoperability tests for topic profile,
+   - Define conformance and interoperability tests for topic model,
      signatures, broker status user property behavior, and transport parity.
 
 5. **Progressive Policy Engine**:
@@ -633,5 +640,5 @@ EMQX via APIs.
 
 **Why Declined**:
 - Diverges from the proposed cross-vendor A2A topic model
-- Makes interoperability guidance harder for users adopting an A2A MQTT profile
+- Makes interoperability guidance harder for users adopting the A2A-over-MQTT profile
 - `a2a/v1/discovery/...` aligns discovery and interaction naming conventions
