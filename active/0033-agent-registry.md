@@ -35,6 +35,23 @@ existing MQTT deployments.
 - **Security profile**: An optional mode activated by `a2a-security-profile` that adds extra requirements (for example `ubsp-v1`).
 - When this document says "profile" without qualification, it refers to one of the above. Operational settings use terms like **feature**, **policy**, or **defaults**.
 
+## JSON-RPC Context (Coarse Mapping)
+
+This registry aligns with the A2A-over-MQTT transport profile, which uses JSON-RPC **2.0** payloads by default.
+
+- **Why JSON-RPC 2.0?**
+  - It is the A2A request/response envelope and is already used by the core A2A protocol.
+  - It provides a stable method/params/result/error structure across HTTP and MQTT bindings.
+
+- **How JSON-RPC maps to MQTT:**
+  - **JSON-RPC `id`**: application-level correlation inside the payload. It is distinct from MQTT `Correlation Data`.
+  - **MQTT `Correlation Data`**: transport-level correlation for request/reply routing. It is REQUIRED on MQTT requests and MUST be echoed on replies.
+  - **JSON-RPC `method`**: the A2A operation name (for example `tasks/send`, `tasks/get`, `tasks/cancel`). It is not the same as an Agent Skill.
+  - **Agent Skills**: discovery metadata describing what an agent can do. Skills can influence client routing decisions but do not change the JSON-RPC method name.
+  - **Agent Card `protocolVersion`**: the A2A protocol version exposed by the agent, not the JSON-RPC version.
+
+In short: JSON-RPC 2.0 is the payload envelope, MQTT properties handle transport correlation, and Agent Skills are discovery hints.
+
 ## Motivation
 
 As the industry transitions toward autonomous, goal-directed AI agents, the
@@ -163,7 +180,7 @@ with MQTT extensions for security:
     {
       "protocolBinding": "MQTT5+JSONRPC",
       "protocolVersion": "1.0",
-      "url": "mqtts://broker.example.com:8883/a2a/v1",
+      "url": "mqtts://broker.example.com:8883",
       "tenant": "com.example/factory-a"
     }
   ],
@@ -204,6 +221,11 @@ with MQTT extensions for security:
   ]
 }
 ```
+
+Note: For MQTT bindings, `url` identifies the broker endpoint (host/port and optional WebSocket path).
+In single-broker deployments the broker may be preconfigured and this value can be treated as informational;
+in multi-broker or federated discovery it provides the connection target.
+Note: Cards registered in EMQX may be identical copies of cards registered externally; retaining `url` preserves the original connection target for interoperability.
 
 Broker-managed lifecycle status is not stored in Agent Card payload fields.
 Instead, EMQX may attach status as MQTT v5 User Properties when forwarding
