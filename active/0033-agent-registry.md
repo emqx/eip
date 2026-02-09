@@ -9,6 +9,7 @@
 * 2026-02-05: @codex Add Dashboard UI MVP scope (simple CRUD-first design)
 * 2026-02-05: @codex Add broker-managed status field and remove cleanup flow
 * 2026-02-06: @codex Move broker-managed status to MQTT v5 User Properties and align QoS profile
+* 2026-02-09: @codex Align registry guidance with latest A2A-over-MQTT client interop, shared pool dispatch, and security profile updates
 
 ## Abstract
 
@@ -17,7 +18,8 @@ autonomous AI agents to discover and collaborate through a standardized,
 event-driven MQTT 5.0 mechanism. The registry uses retained Agent Cards on
 A2A-defined discovery topics and aligns with an A2A MQTT profile, including
 topic path conventions, MQTT 5 properties, JSON-RPC payload guidance, and
-security metadata for public-key-based trust.
+security metadata for public-key-based trust, plus optional end-to-end payload
+protection for untrusted broker environments.
 The feature improves user experience for both MQTT clients (agents) and system
 administrators through CLI and Dashboard management tools while preserving native
 MQTT workflows. Agents can self-register by publishing retained messages, and
@@ -76,6 +78,9 @@ messages while providing enhanced functionality through:
    discovery messages
 5. **Security Metadata**: Agent Cards include public key / JWKS metadata for
    optional message signing and encryption policies
+6. **Interop Alignment**: Client behavior follows the A2A-over-MQTT profile,
+   including shared pool dispatch, binary artifact mode, and optional
+   untrusted-broker security profile (`ubsp-v1`)
 
 ### Topic Structure
 
@@ -93,6 +98,10 @@ Where:
 - `{unit_id}`: Business unit or deployment segment identifier
 - `{agent_id}`: Unique identifier for the agent instance
 
+Identifier constraints (per A2A-over-MQTT profile):
+- `org_id`, `unit_id`, `agent_id` **MUST** match `^[A-Za-z0-9._]+$`
+- IDs **MUST NOT** contain `/`, `+`, `#`, whitespace, or other characters
+
 Recommended MQTT identity mapping:
 - Client ID or Username format: `{org_id}/{unit_id}/{agent_id}` (do not include `/` in the IDs)
 - This enables simple conventional ACL patterns aligned with A2A topic paths.
@@ -107,6 +116,9 @@ a2a/v1/{method}/{org_id}/{unit_id}/{agent_id}
 Where `{method}` is typically one of `request`, `reply`, or `event`.
 For flexibility, EMQX allows configurable prefixes, but the default profile is
 the standardized A2A topic model above.
+
+Agents MAY also be discovered via HTTP well-known endpoints defined by core A2A
+conventions. MQTT-discovered cards remain authoritative for MQTT routing.
 
 ### Agent Card Schema
 
@@ -266,20 +278,42 @@ interaction topics described by each Agent Card endpoint.
 
 - **Request/Reply**: Requesters publish to
   `a2a/v1/request/{org_id}/{unit_id}/{agent_id}` using QoS 1 and MUST set MQTT
-  5 properties `Response Topic` and `Correlation Data`, plus user property
-  `a2a-method`.
+  5 properties `Response Topic` and `Correlation Data`. Responders publish
+  replies to the provided reply topic using QoS 1 and MUST echo
+  `Correlation Data`. `Correlation Data` is transport correlation and MUST NOT
+  be used as an A2A task id. For newly created tasks, responders MUST return a
+  server-generated `Task.id`, which requesters use for subsequent operations.
 - **Response Topic**: Requesters MUST provide a routable reply topic in the
   MQTT 5 `Response Topic` property, with a recommended pattern
-  `a2a/v1/reply/{org_id}/{unit_id}/{agent_id}/{reply_suffix}`. Responders publish
-  replies to the provided reply topic using QoS 1 and MUST echo
-  `Correlation Data`.
+  `a2a/v1/reply/{org_id}/{unit_id}/{agent_id}/{reply_suffix}`.
+- **Streaming**: Each stream item is a discrete MQTT message to the reply
+  topic with the same `Correlation Data`. Receipt of terminal
+  `TaskStatusUpdateEvent.status.state` (`TASK_STATE_COMPLETED`,
+  `TASK_STATE_FAILED`, `TASK_STATE_CANCELED`) ends the stream.
 - **Event Topic**: Agents publish asynchronous notifications to
   `a2a/v1/event/{org_id}/{unit_id}/{agent_id}`. Events MAY be published using
   QoS 0.
-- **Streaming**: Long-running tasks can emit partial outputs to the reply
-  topic, with progress metadata in user properties.
-- **Payload format**: A2A task payloads SHOULD follow JSON-RPC 2.0 with
-  `content-type = application/json` and `payload format indicator = 1`.
+- **Optional Shared Pool Dispatch**: Requesters MAY publish to
+  `a2a/v1/request/{org_id}/{unit_id}/pool/{pool_id}`. Pool members consume via
+  shared subscriptions and responders MUST include `a2a-responder-agent-id` in
+  pooled responses so requesters can route follow-ups to the concrete responder.
+- **OAuth 2.0/OIDC**: When required by the Agent Card, requesters MUST include
+  `a2a-authorization: Bearer <access_token>` as an MQTT User Property on each
+  request; responders validate tokens before processing.
+- **Optional Binary Artifact Mode**: Requesters MAY set
+  `a2a-artifact-mode=binary` to receive chunked binary artifacts. Binary chunks
+  include required metadata (`a2a-event-type`, `a2a-task-id`,
+  `a2a-artifact-id`, `a2a-chunk-seqno`, `a2a-last-chunk`) and use payload format
+  indicator `0` with appropriate `Content Type`.
+- **Optional Untrusted-Broker Security Profile**: Requesters MAY set
+  `a2a-security-profile=ubsp-v1` to require end-to-end encrypted payloads.
+  Payloads use JWE with `Content Type` `application/jose+json` or
+  `application/jose` and include `a2a-requester-agent-id`,
+  `a2a-recipient-agent-id` (request) or `a2a-responder-agent-id` (response).
+- **Payload format**: Default payloads SHOULD follow JSON-RPC 2.0 with
+  `Content Type = application/json` and `Payload Format Indicator = 1` unless
+  an optional profile (for example `ubsp-v1` or binary artifact mode) requires
+  a different content type or payload indicator.
 
 #### 6. CLI Management
 
@@ -377,8 +411,9 @@ New "A2A Registry" section in the EMQX Dashboard:
 
 7. **Peer-to-Peer Payload Security**: EMQX provides discovery and registration
    policy, but end-to-end message confidentiality/integrity between agents is a
-   peer responsibility. Publishers SHOULD encrypt sensitive payloads using the
-   subscriber/receiver public key and receivers SHOULD verify sender signatures.
+   peer responsibility. For untrusted broker environments, agents SHOULD use
+   the A2A-over-MQTT untrusted-broker security profile (`ubsp-v1`) with
+   end-to-end encrypted payloads.
 
 ### Performance Considerations
 
@@ -397,12 +432,15 @@ New "A2A Registry" section in the EMQX Dashboard:
 
 ### Recommended QoS Profile
 
-EMQX SHOULD document these defaults:
+EMQX SHOULD document these defaults (aligned with the A2A-over-MQTT profile):
 
 - Discovery / Agent Card retained publications: QoS 1
 - Request: QoS 1
 - Reply: QoS 1
 - Event: QoS 0 (MAY use higher QoS if required by deployment policy)
+
+Interoperability requires clients and brokers to support QoS 1 on discovery,
+request, and reply paths.
 
 ## Configuration Changes
 
@@ -507,7 +545,8 @@ This feature is fully backward compatible:
 
 3. **API Reference**: Document the Agent Card schema and validation rules
    including security metadata fields, MQTT 5 request/reply mapping, QoS
-   requirements, and broker status user properties.
+   requirements, and broker status user properties, plus optional profiles
+   (shared pool dispatch, binary artifact mode, and `ubsp-v1`).
 
 4. **Examples**: Add example code for:
   - Python agent registration
@@ -561,6 +600,9 @@ This feature is fully backward compatible:
    - ACL denial handling
    - Registry service restart recovery
    - Signature verification failure handling (when enabled)
+   - Shared pool response missing `a2a-responder-agent-id`
+   - `ubsp-v1` request with mismatched `a2a-recipient-agent-id`
+   - Binary artifact mode missing `a2a-chunk-seqno`
 
 ### Performance Tests
 
