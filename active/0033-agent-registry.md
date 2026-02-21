@@ -2,6 +2,7 @@
 
 ## Changelog
 
+* 2026-02-21: @codex Change default A2A topic examples from `a2a/v1/...` to `$a2a/v1/...`
 * 2026-02-03: @zmstone/codex Initial draft
 * 2026-02-03: @codex Align with A2A-over-MQTT transport profile and tighten EMQX wording
 * 2026-02-05: @codex Add trusted JKU policy for runtime signed messages
@@ -112,11 +113,11 @@ Following the A2A-over-MQTT transport profile, the registry uses this discovery 
 hierarchy:
 
 ```
-a2a/v1/discovery/{org_id}/{unit_id}/{agent_id}
+$a2a/v1/discovery/{org_id}/{unit_id}/{agent_id}
 ```
 
 Where:
-- `a2a/v1/discovery`: A2A discovery prefix
+- `$a2a/v1/discovery`: A2A discovery prefix
 - `{org_id}`: Organization or trust domain identifier (e.g., reverse DNS:
   `com.example`)
 - `{unit_id}`: Business unit or deployment segment identifier
@@ -134,7 +135,7 @@ In addition to discovery topics, the Agent Card endpoint fields SHOULD point to
 the standardized interaction path:
 
 ```
-a2a/v1/{method}/{org_id}/{unit_id}/{agent_id}
+$a2a/v1/{method}/{org_id}/{unit_id}/{agent_id}
 ```
 
 Where `{method}` is typically one of `request`, `reply`, or `event`.
@@ -254,7 +255,7 @@ synchronized with retained messages stored in EMQX.
 Agents register themselves by publishing a retained message:
 
 ```bash
-Topic: a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
+Topic: $a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
 QoS: 1
 Retain: true
 Payload: <Agent Card JSON>
@@ -273,13 +274,13 @@ Agents discover other agents by subscribing to registry topics:
 
 ```bash
 # Subscribe to all agents in an organization
-Topic: a2a/v1/discovery/com.example/+/+
+Topic: $a2a/v1/discovery/com.example/+/+
 
 # Subscribe to specific agent
-Topic: a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
+Topic: $a2a/v1/discovery/com.example/factory-a/iot-ops-agent-001
 
 # Wildcard subscription across organizations (with proper ACLs)
-Topic: a2a/v1/discovery/+/+
+Topic: $a2a/v1/discovery/+/+
 ```
 
 Upon subscription, agents immediately receive all retained Agent Cards matching
@@ -306,7 +307,7 @@ The registry standardizes discovery. Agent-to-agent task traffic continues on
 interaction topics described by each Agent Card endpoint.
 
 - **Request/Reply**: Requesters publish to
-  `a2a/v1/request/{org_id}/{unit_id}/{agent_id}` using QoS 1 and MUST set MQTT
+  `$a2a/v1/request/{org_id}/{unit_id}/{agent_id}` using QoS 1 and MUST set MQTT
   5 properties `Response Topic` and `Correlation Data`. Responders publish
   replies to the provided reply topic using QoS 1 and MUST echo
   `Correlation Data`. `Correlation Data` is transport correlation and MUST NOT
@@ -314,13 +315,13 @@ interaction topics described by each Agent Card endpoint.
   server-generated `Task.id`, which requesters use for subsequent operations.
 - **Response Topic**: Requesters MUST provide a routable reply topic in the
   MQTT 5 `Response Topic` property, with a recommended pattern
-  `a2a/v1/reply/{org_id}/{unit_id}/{agent_id}/{reply_suffix}`.
+  `$a2a/v1/reply/{org_id}/{unit_id}/{agent_id}/{reply_suffix}`.
 - **Streaming**: Each stream item is a discrete MQTT message to the reply
   topic with the same `Correlation Data`. Receipt of terminal
   `TaskStatusUpdateEvent.status.state` (`TASK_STATE_COMPLETED`,
   `TASK_STATE_FAILED`, `TASK_STATE_CANCELED`) ends the stream.
 - **Event Topic**: Agents publish asynchronous notifications to
-  `a2a/v1/event/{org_id}/{unit_id}/{agent_id}`. Events MAY be published using
+  `$a2a/v1/event/{org_id}/{unit_id}/{agent_id}`. Events MAY be published using
   QoS 0.
 - **Optional Shared Pool Dispatch**: Requesters MAY publish to shared pool
   request topics defined by the A2A-over-MQTT transport profile. Pool members
@@ -534,7 +535,7 @@ This feature is fully backward compatible:
    behavior or retained message handling. It adds a management layer on top of
    standard MQTT retained messages and does not mutate Agent Card payloads.
 
-3. **Topic Isolation**: Registry topics default to `a2a/v1/`, which
+3. **Topic Isolation**: Registry topics default to `$a2a/v1/`, which
    keeps agent discovery traffic separate from existing application topics.
 
 4. **Graceful Degradation**: If the registry service is unavailable, MQTT
@@ -571,6 +572,7 @@ This feature is fully backward compatible:
   - JavaScript agent discovery
   - CLI management workflows
   - Dashboard JSON import/export workflow
+  - A2A-over-MQTT Python SDK usage (coming soon)
 
 ## Future Work
 
@@ -652,4 +654,4 @@ EMQX via APIs.
 **Why Declined**:
 - Diverges from the proposed cross-vendor A2A topic model
 - Makes interoperability guidance harder for users adopting the A2A-over-MQTT profile
-- `a2a/v1/discovery/...` aligns discovery and interaction naming conventions
+- `$a2a/v1/discovery/...` aligns discovery and interaction naming conventions
