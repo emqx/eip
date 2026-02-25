@@ -11,6 +11,7 @@
 * 2026-02-05: @codex Add broker-managed status field and remove cleanup flow
 * 2026-02-06: @codex Move broker-managed status to MQTT v5 User Properties and align QoS defaults
 * 2026-02-09: @codex Align registry guidance with latest A2A-over-MQTT client interop, shared pool dispatch, and security profile updates
+* 2026-02-25: @zmstone Mandatory agent client ID format
 
 ## Abstract
 
@@ -124,11 +125,11 @@ Where:
 - `{agent_id}`: Unique identifier for the agent instance
 
 Identifier constraints (per A2A-over-MQTT profile):
-- `org_id`, `unit_id`, `agent_id` **MUST** match `^[A-Za-z0-9._]+$`
+- `org_id`, `unit_id`, `agent_id` **MUST** match `^[A-Za-z0-9._-]+$`
 - IDs **MUST NOT** contain `/`, `+`, `#`, whitespace, or other characters
 
-Recommended MQTT identity mapping:
-- Client ID or Username format: `{org_id}/{unit_id}/{agent_id}` (do not include `/` in the IDs)
+Required MQTT client identity mapping:
+- MQTT Client ID **MUST** use the format `{org_id}/{unit_id}/{agent_id}`
 - This enables simple conventional ACL patterns aligned with A2A topic paths.
 
 In addition to discovery topics, the Agent Card endpoint fields SHOULD point to
