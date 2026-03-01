@@ -54,26 +54,13 @@ supported values.
 
 ### Behavioral requirements
 
-#### `legacy`
-
-Keep compatibility behavior:
-
-* Allow using default Erlang cookie (known cookies are `emqxsecretcookie` and
-  `emqx50elixir`).
-* Allow admin user to login with `public` password.
-* Allow anonymous login for MQTT clients.
-
-#### `hardened`
-
-Enforce secure behavior:
-
-* Do not boot if Erlang cookie is any known default value
-  (`emqxsecretcookie` or `emqx50elixir`).
-* Do not allow dashboard login if `public` is the password; password must be
-  changed first via `emqx ctl`.
-  Or the admin account is bootstrapped with non-public password.
-* Do not allow anonymous login for MQTT clients; if authentication chain is
-  empty, deny access.
+| Behavior | `legacy` | `hardened` |
+| --- | --- | --- |
+| Erlang cookie default values (`emqxsecretcookie`, `emqx50elixir`) | Allowed | Boot fails if used |
+| Dashboard listener default bind | `0.0.0.0` | `127.0.0.1` |
+| Dashboard admin password `public` | Login allowed | Login denied until password is changed |
+| MQTT anonymous login when auth chain is empty | Allowed | Denied |
+| ACL last rule | `{check, "$EMQX_SECURITY_PROFILE"}.` | `{check, "$EMQX_SECURITY_PROFILE"}.` |
 
 ### ACL final rule
 
@@ -138,6 +125,8 @@ Add automated coverage for both profile values:
 * boot succeeds/fails against each Erlang cookie case;
 * dashboard login acceptance/rejection with `public` password;
 * MQTT anonymous access behavior when auth chain is empty/non-empty;
+* Dashboard listener default bind address behavior in `legacy` (`0.0.0.0`) and
+  `hardened` (`127.0.0.1`);
 * ACL final rule behavior using `{check, "$EMQX_SECURITY_PROFILE"}` in both
   `legacy` and `hardened`;
 * boot default behavior in 6.2 (`legacy`) and 7 (`hardened`) when env var is
