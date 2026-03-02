@@ -3,21 +3,17 @@
 ## Changelog
 
 * 2026-02-14: @zmstone Initial draft.
+* 2026-03-02: @zmstone Use send-count based sampling interval.
 
 ## Abstract
 
-This proposal improves memory-session behavior under send-path pressure by
-preventing mailbox growth and reducing QoS 0 bypass under stress. Today, QoS 0
-can still be sent immediately while QoS 1/2 are constrained by inflight and may
-be queued, which can increase unfairness and contribute to mailbox buildup when
-transport send is slow.
+This proposal improves memory-session behavior under send-path pressure by preventing Erlang mailbox growth as large mailboxes MAY significantly increase messaging processing overhead and reducing QoS 0 bypass under stress.
 
-Instead of introducing multiple new configuration knobs, this proposal uses a
-simple runtime signal: connection process mailbox length. Periodically, EMQX
-samples mailbox length. If the queue is above a fixed threshold, QoS 0 will be
-routed to `mqueue` (for online sessions) instead of immediate send. This keeps
-the no-pressure fast path unchanged and focuses on the main operational risk:
-mailbox explosion.
+Today, QoS 0 can still be sent immediately while QoS 1/2 are constrained by inflight and may be queued, which can increase unfairness and contribute to mailbox buildup when transport send is slow.
+
+Instead of introducing multiple new configuration knobs, this proposal uses a simple runtime signal: connection process mailbox length. Periodically, EMQX samples mailbox length.
+If the queue is above a fixed threshold, QoS 0 will be routed to `mqueue` (for online sessions) instead of immediate send.
+This down prio the QoS0 message sending and keeps the no-pressure fast path unchanged and focuses on the main operational risk: mailbox explosion.
 
 ## Motivation
 
@@ -68,10 +64,7 @@ Equivalent gate:
 Introduce an internal `mailbox_busy` state derived from periodic sampling of
 process mailbox length.
 
-Sampling trigger (choose one, implementation detail):
-
-- every `active_n` sends, or
-- existing emit-stats timer cadence.
+Sampling trigger every 100 sends.
 
 Signal rule (proposed):
 
@@ -93,6 +86,8 @@ Offline semantics remain unchanged:
 This EIP only changes online scheduling under pressure.
 
 ### Why mailbox signal over latency signal in this draft
+
+For 'latency signal' see [Alternative Approaches](#alternative-approaches) below.
 
 - Fewer moving parts and no new tuning knobs.
 - Directly aligned with the primary stability objective.
@@ -131,7 +126,7 @@ If accepted and implemented, update:
 ### Targeted tests
 
 - Add/update session-level tests:
-  - QoS 0 does not bypass when inflight is full.
+  - QoS 0 does not immediate-send when inflight is full.
   - QoS 0 does not bypass when mailbox busy is true.
   - QoS 0 does not bypass when `mqueue` has backlog.
   - QoS 0 fast path remains for healthy/no-pressure case.
@@ -149,7 +144,7 @@ If accepted and implemented, update:
   - QoS 1/2 ack latency under stress,
   - QoS 0 throughput impact only during pressure periods.
 
-## Alternative Approaches (Pros and Cons)
+## Alternative Approaches
 
 ### A. Mailbox-based busy flag (this proposal)
 
@@ -179,6 +174,7 @@ Cons:
 - More state and tuning logic (EWMA, thresholds, counters).
 - More likely to trigger "too much configuration" concerns.
 - Latency can reflect scheduler/CPU noise, not just socket pressure.
+- Latency is rarely constant and frequently varies due to the dynamic nature of network traffic.
 
 Reasoning:
 
