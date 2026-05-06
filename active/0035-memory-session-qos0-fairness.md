@@ -17,6 +17,61 @@ This down prio the QoS0 message sending and keeps the no-pressure fast path unch
 
 ## Motivation
 
+```
+                publisher (PUBLISH at QoS 0)
+                          │
+                          ▼
+                ┌────────────────────────┐
+                │       EMQX broker      │
+                │   do_dispatch_chans    │
+                └────────────┬───────────┘
+                             │  SubPid ! #deliver{Msg(qos=0)}
+                             ▼
+ ╔══ subscriber connection process ═══════════════════════════════════╗
+ ║                                                                    ║
+ ║   ┌─────────────────────────────────────────┐                      ║
+ ║   │  Erlang process mailbox                 │  ◄── ⚠ QoS 0         ║
+ ║   │  unbounded queue of #deliver{} records  │      overflow path   ║
+ ║   │  cap: force_shutdown.max_mailbox_size   │      proc KILLED at  ║
+ ║   │       = 1 000 000  →  KILL              │      max_mailbox_size║
+ ║   └────────────────────┬────────────────────┘      (session reset) ║
+ ║                        │ receive (one-by-one)                      ║
+ ║                        ▼                                           ║
+ ║   ┌─────────────────────────────────────────┐                      ║
+ ║   │  emqx_session:enrich_message/4          │                      ║
+ ║   │     if upgrade_qos: QoS := SubQoS       │                      ║
+ ║   └────────────────────┬────────────────────┘                      ║
+ ║                        │                                           ║
+ ║                ┌───────┴────────┐                                  ║
+ ║              QoS 0           QoS ≥ 1                               ║
+ ║                │                │                                  ║
+ ║                │                ▼                                  ║
+ ║                │       ┌────────────────┐  full                    ║
+ ║                │       │ inflight (≤32) ├──────────┐               ║
+ ║                │       └────────┬───────┘          │               ║
+ ║                │                │ room             ▼               ║
+ ║                │                │         ┌────────────────┐       ║
+ ║                │                │         │ mqueue (≤1000) │       ║
+ ║                │                │         │                │  ◄── ⚠ QoS 1
+ ║                │                │         │ overflow→drop  │      overflow
+ ║                │                │         │  + counter     │      path
+ ║                │                │         └────────┬───────┘      bounded,
+ ║                │                │                  │drop          metered
+ ║                │                │                  ▼              drop
+ ║                │                │                ─ ✕ ─            (proc
+ ║                │                ▼                                  survives)
+ ║                └────► port_command / gen_tcp:send                  ║
+ ║                              │  blocks on busy_port →              ║
+ ║                              │  proc suspended waiting on socket   ║
+ ║                              ▼                                     ║
+ ╚══════════════════════════════│═════════════════════════════════════╝
+                                ▼
+                    kernel TCP send buffer
+                                │
+                                ▼  TCP / network
+                          subscriber client
+```
+
 Primary goal:
 
 - Prevent mailbox accumulation in connection/channel process under send pressure.
