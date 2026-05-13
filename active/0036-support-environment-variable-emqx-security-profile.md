@@ -5,6 +5,7 @@
 * 2026-02-28: @zmstone Initial draft
 * 2026-03-02: @zmstone Replace ACL catch-all design with profile-aware `authorization.no_match`
 * 2026-03-02: @zmstone Adjust rollout plan: keep 6.2 defaults for backward compatibility, switch defaults in v7
+* 2026-05-13: @id Merge ideas from #94: MQTT/WS listener bind in `hardened`, dashboard rejection hint, tighter v7 default ACL rules
 
 ## Abstract
 
@@ -72,9 +73,21 @@ supported values.
 | --- | --- | --- |
 | Erlang cookie default values (`emqxsecretcookie`, `emqx50elixir`) | Allowed | Boot fails if used |
 | HTTP (not HTTPS) listener default bind | `0.0.0.0` | `127.0.0.1` |
+| MQTT/WS listener default bind (`tcp.default`, `ssl.default`, `ws.default`, `wss.default`) | `0.0.0.0` | `127.0.0.1` |
 | Dashboard admin password `public` | Login allowed | Login denied until password is changed |
 | MQTT anonymous login when auth chain is empty | Allowed | Denied |
 | `authorization.no_match = profile` effective result | `allow` | `deny` |
+
+### Dashboard login rejection message
+
+When `hardened` blocks login because the admin password is still `public`, the
+dashboard should return a clear remediation hint, for example:
+
+```
+Default admin password must be changed before login is allowed.
+* Run: emqx ctl admins passwd admin <a-strong-password>
+* Or configure: dashboard.default_password = "<a-strong-password>"
+```
 
 ### Authorization `no_match` extension
 
@@ -105,7 +118,14 @@ Default value by release:
 For backward compatibility in 6.2, default `acl.conf` keeps the final
 `{allow, all}.` rule.
 
-In 7, default `acl.conf` removes the final `{allow, all}.` catch-all rule.
+In 7, default `acl.conf` removes the final `{allow, all}.` catch-all rule and
+tightens the remaining rules to deny risky wildcard and `$SYS/#` subscriptions:
+
+```erlang
+{allow, {username, {re, "^dashboard$"}}, subscribe, ["$SYS/#"]}.
+{allow, {ipaddr, "127.0.0.1"}, all, ["$SYS/#", "#"]}.
+{deny, all, subscribe, ["$SYS/#", {eq, "#"}, {eq, "+/#"}]}.
+```
 
 If no ACL rule matches, final decision comes from `authorization.no_match`.
 
@@ -188,6 +208,10 @@ Add automated coverage for both profile values:
 * MQTT anonymous access behavior when auth chain is empty/non-empty;
 * HTTP (not HTTPS) listener default bind address behavior in `legacy` (`0.0.0.0`) and
   `hardened` (`127.0.0.1`);
+* MQTT/WS listener default bind address behavior in `legacy` (`0.0.0.0`) and
+  `hardened` (`127.0.0.1`);
+* v7 default `acl.conf` denies `$SYS/#`, `#`, and `+/#` subscriptions for
+  non-dashboard, non-localhost clients;
 * `authorization.no_match=profile` resolves to `allow` in `legacy` and `deny`
   in `hardened`;
 * explicit `authorization.no_match=allow` and `deny` behavior remains unchanged;
