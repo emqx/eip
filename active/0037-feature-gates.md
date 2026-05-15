@@ -12,6 +12,10 @@
 * 2026-05-15: @zmstone Remove `file_transfer`, `gcp_device`, `exhook`,
   `opentelemetry` from the listable vocabulary (available only when
   `EMQX_FEATURES=FULL`); fold `telemetry` into basics (license-controlled)
+* 2026-05-15: @zmstone Drop the HOCON schema field; `EMQX_FEATURES` is
+  not mapped into the configuration tree at all -- resolution is done
+  once at boot and held in a dedicated module, with no dashboard /
+  REST writable surface to defend
 
 ## Abstract
 
@@ -37,8 +41,11 @@ When all optional features are disabled, EMQX boots in *essential* mode --
 the same shape proposed independently in the boot-mode prototype. The two
 designs converge here: essential mode is just `EMQX_FEATURES=ESSENTIAL`.
 
-The mechanism is intentionally simple. Selection happens once at boot.
-There is no runtime toggle, no dependency resolution, no implicit
+The mechanism is intentionally simple. Selection happens once at boot
+and `EMQX_FEATURES` is not part of the HOCON configuration tree (no
+schema entry, nothing in `emqx.conf` or `cluster.hocon`, nothing the
+dashboard can write). There is no runtime toggle, no dependency
+resolution, no implicit
 enablement. Operators who need a feature must explicitly list it.
 
 ## Motivation
@@ -243,20 +250,29 @@ The resolved enabled-set is logged once at boot:
        disabled: []
 ```
 
-### Internal schema field
+### Where the resolved set lives
 
-Although the *interface* is an env var only, the resolved set is held in
-a schema field at `features.enabled`. This gives:
+`EMQX_FEATURES` is **not** mapped into the HOCON configuration tree.
+There is no `features.enabled` config path, no schema entry, and no
+hocon-typed field. The resolved set is held in a dedicated module
+(e.g. `emqx_features`) as a one-time-at-boot value -- `persistent_term`
+or `application:set_env/3` are both reasonable storage choices.
 
-* type validation (typos caught with a useful list of valid names);
-* a single canonical place for the rest of the codebase to query
-  ("is dashboard enabled?");
-* `emqx ctl conf show features` works.
+This keeps the env-var-only semantics honest: nothing in the configs
+API, dashboard config editor, or `cluster.hocon` can see or modify the
+feature gates. The governance boundary is enforced by *absence from
+the config tree*, not by an annotation on a schema field.
 
-The schema marks `features.*` as **not mutable at runtime**: any
-`PUT /api/v5/configs/features` (or equivalent dashboard write) returns
-`403 Forbidden` with `{code: "READ_ONLY", reason: "feature_gates_are_immutable"}`.
-The dashboard's config editor does not show the path.
+Queries from the rest of the codebase go through the module:
+
+```erlang
+emqx_features:is_enabled(dashboard).   %% -> true | false
+emqx_features:enabled().               %% -> [dashboard, authn, authz, ...]
+emqx_features:preset().                %% -> 'FULL' | 'ESSENTIAL' | custom
+```
+
+Validation (typo rejection, unknown-token errors) happens in the parser
+at boot.
 
 ### REST API
 
@@ -417,8 +433,8 @@ Feature gates are an *installer* concern, not a *runtime operator*
 concern. The boundary is enforced by:
 
 * the env-var-only interface (no file the dashboard can write);
-* the schema annotation that makes `features.*` read-only at the
-  REST/dashboard layer;
+* the absence of a `features.*` config branch entirely -- there is
+  nothing in the HOCON config tree for the dashboard to mutate;
 * the absence of an "edit feature gates" UI in the dashboard;
 * boot-time-only evaluation (no SIGHUP-style reload).
 
@@ -428,14 +444,9 @@ restarts the broker. The operator running the broker cannot bypass this.
 
 ## Configuration Changes
 
-New schema field:
-
-```hocon
-features {
-  # populated by EMQX_FEATURES env var; not user-writable via file or REST
-  enabled = []  # list of feature-name atoms
-}
-```
+No HOCON schema changes. `EMQX_FEATURES` is not mapped into the
+configuration tree; it is parsed once at boot and held in a dedicated
+runtime module (see "Where the resolved set lives").
 
 No existing config keys change. Existing per-feature config sections
 (`dashboard {...}`, `prometheus {...}`, `authorization {...}` etc.)
@@ -448,9 +459,15 @@ New REST endpoint:
 GET /api/v5/feature_flags    # read-only
 ```
 
-No new CLI command shape is added in this proposal beyond
-`emqx ctl features list` and `emqx ctl features status <name>` -- both
-of which read the same `features.enabled` schema path.
+New CLI commands:
+
+```
+emqx ctl features list
+emqx ctl features status <name>
+```
+
+Both query `emqx_features:enabled/0` / `emqx_features:is_enabled/1`,
+which in turn read the boot-resolved set.
 
 ## Backwards Compatibility
 
