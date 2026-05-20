@@ -6,7 +6,7 @@
 * 2026-03-02: @zmstone Replace ACL catch-all design with profile-aware `authorization.no_match`
 * 2026-03-02: @zmstone Adjust rollout plan: keep 6.2 defaults for backward compatibility, switch defaults in v7
 * 2026-05-13: @id Merge ideas from #94: MQTT/WS listener bind in `hardened`, dashboard rejection hint, tighter v7 default ACL rules
-* 2026-05-19: @savonarola Use new `who()` condition in `acl.conf` instead of `authorization.no_match=profile` for simplifying the transition.
+* 2026-05-19: @savonarola Use new `who()` condition in `acl.conf` instead of `authorization.no_match=profile` for simplifying the transition. Target 6.3 release for the changes.
 
 ## Abstract
 
@@ -24,14 +24,11 @@ For authorization fallback, this proposal extends `acl.conf`'s syntax.
 It adds a new `who()` condition: `{security_profile, legacy| hardened}` which is true when the
 configured profile matches.
 
-* `legacy` => act as `allow`
-* `hardened` => act as `deny`
-
 Rollout is versioned for compatibility:
 
 * EMQX 6.2 defaults to `legacy`, and
   updates `{allow, all}` to `{allow, {security_profile, legacy}}` in default `acl.conf`.
-* EMQX 7 defaults to `hardened`.
+* EMQX 6.3 defaults to `hardened`. The default `acl.conf` retains unchainged: with `{allow, {security_profile, legacy}}` as the final rule.
 
 ## Motivation
 
@@ -43,7 +40,7 @@ We need a single environment-level control that:
 
 * keeps compatibility for EMQX 6.2 users;
 * enables hardened operation with clear enforcement;
-* supports a planned default transition in EMQX 7;
+* supports a planned default transition in EMQX 6.3;
 * is visible and auditable in deployment manifests.
 
 ## Design
@@ -62,7 +59,7 @@ Release defaults:
 | Release | Default `EMQX_SECURITY_PROFILE` (when unset) | Default `acl.conf` catch-all |
 | --- | --- | --- |
 | 6.2 | `legacy` | Update to `{allow, {security_profile, legacy}}.` |
-| 7 | `hardened` | Update to `{allow, {security_profile, legacy}}.` |
+| 6.3 | `hardened` | Retain `{allow, {security_profile, legacy}}.` |
 
 Invalid values should fail fast at boot with a clear error message listing
 supported values.
@@ -94,7 +91,7 @@ For backward compatibility in 6.2, updates `acl.conf` to replace the default cat
 with a profile-aware rule: `{allow, {security_profile, legacy}}.` rule.
 By default, the profile is legacy, so this preserves existing behavior.
 
-In 7, default `acl.conf` retains the default profile-aware rule `{allow, {security_profile, legacy}}.`
+In 6.3, default `acl.conf` retains the default profile-aware rule `{allow, {security_profile, legacy}}.`
 When the default profile is hardened, this rule stops triggering, and the
 decision falls back to `authorization.no_match`.
 
@@ -118,19 +115,14 @@ EMQX_SECURITY_PROFILE=legacy
 or:
 
 ```bash
-# 7 default when unset
+# 6.3 default when unset
 EMQX_SECURITY_PROFILE=hardened
 ```
 
 Default `acl.conf` changes:
 
-```
-%% 6.2 default
-{allow, all}.
-```
-
 ```erlang
-%% 6.3 and 7 default
+%% 6.2 and 6.3 default
 {allow, {security_profile, legacy}}.
 ```
 
@@ -140,7 +132,7 @@ For EMQX 6.2, defaulting to `legacy` preserves current behavior when users do
 not set the variable, since `{allow, {security_profile, legacy}}.` evaluates to `allow` in this case,
 which is equivalent to the previous `{allow, all}.` default.
 
-For EMQX 7, defaulting to `hardened` is a deliberate security tightening and update
+For EMQX 6.3, defaulting to `hardened` is a deliberate security tightening and update
 guidance should recommend explicitly setting `EMQX_SECURITY_PROFILE=legacy`
 during transition and then remediating to move to `hardened`.
 
@@ -151,9 +143,9 @@ No wire protocol changes are introduced.
 Update operational docs to include:
 
 * profile semantics (`legacy` vs `hardened`);
-* release default timeline (6.2 and 7+), including
+* release default timeline (6.2 and 6.3), including
   `{allow, {security_profile, legacy}}` defaults;
-* migration guidance for v7 default hardening;
+* migration guidance for 6.3 default hardening;
 * examples for containerized and package-based deployments.
 
 ## Testing Suggestions
@@ -167,16 +159,13 @@ Add automated coverage for both profile values:
   `hardened` (`127.0.0.1`);
 * MQTT/WS listener default bind address behavior in `legacy` (`0.0.0.0`) and
   `hardened` (`127.0.0.1`);
-* v7 default `acl.conf` denies `$SYS/#`, `#`, and `+/#` subscriptions for
+* 6.3 default `acl.conf` denies `$SYS/#`, `#`, and `+/#` subscriptions for
   non-dashboard, non-localhost clients;
-* explicit `authorization.no_match=allow` and `deny` behavior remains unchanged;
 * default behavior in 6.2:
   `EMQX_SECURITY_PROFILE=legacy` (unset), `authorization.no_match=deny`, and
-  default `acl.conf` keeps `{allow, all}.`;
-* default behavior in 7:
-  `EMQX_SECURITY_PROFILE=hardened` (unset),
-  `authorization.no_match=profile`, and default `acl.conf` removes
-  `{allow, all}.`.
+  default `acl.conf` becomes `{allow, {security_profile, legacy}}.`;
+* default behavior in 6.3:
+  `EMQX_SECURITY_PROFILE=hardened` (unset) and default `acl.conf` remains `{allow, {security_profile, legacy}}.`.
 
 Include integration tests to verify environment-variable-driven behavior in real
 startup flows.
