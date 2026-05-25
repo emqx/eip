@@ -97,10 +97,8 @@ product assumes.
 * Audit log (`emqx_audit`)
 * Live trace (`emqx_trace`, the REST surface in `emqx_management`
   is gated by `dashboard`)
-* Node rebalance / evacuation (`emqx_node_rebalance`,
-  `emqx_eviction_agent`)
-* Retainer (`emqx_retainer` -- can still be disabled per-listener via
-  existing MQTT config; not a feature gate)
+* Node rebalance / evacuation (`emqx_node_rebalance`, `emqx_eviction_agent`)
+* Retainer (`emqx_retainer` is enabled by defualt from config `retainer.enable`)
 * TLS PSK (`emqx_psk` -- per-listener config, not a feature gate)
 * Outbound telemetry (`emqx_telemetry` -- enable/disable is determined
   by the active license, not by feature gates)
