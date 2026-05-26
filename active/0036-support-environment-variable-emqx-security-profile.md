@@ -7,6 +7,7 @@
 * 2026-03-02: @zmstone Adjust rollout plan: keep 6.2 defaults for backward compatibility, switch defaults in v7
 * 2026-05-13: @id Merge ideas from #94: MQTT/WS listener bind in `hardened`, dashboard rejection hint, tighter v7 default ACL rules
 * 2026-05-19: @savonarola Use new `who()` condition in `acl.conf` instead of `authorization.no_match=profile` for simplifying the transition. Target 6.3 release for the changes.
+* 2026-05-26: @savonarola Use `deny` for failures in external authorization backends.
 
 ## Abstract
 
@@ -94,6 +95,17 @@ By default, the profile is legacy, so this preserves existing behavior.
 In 6.3, default `acl.conf` retains the default profile-aware rule `{allow, {security_profile, legacy}}.`
 When the default profile is hardened, this rule stops triggering, and the
 decision falls back to `authorization.no_match`.
+
+### ACL behavior on external backend errors
+
+Currently, when an authz backend fails (e.g., HTTP or PostgreSQL is down), EMQX  
+treats the failure as `nomatch`, moving to the next authz source or to the default nomatch.  
+This behaviour may lead to unexpected privilege escalation if subsequent sources are more  
+permissive. Also, this behaviour may be abused: an attacker may purposely issue numerous  
+actions requiring authorization to trigger backend failures.
+
+With the `hardened` profile, authz changes the behaviour.  
+On backend failure because of unavailability or misconfiguration, EMQX returns `deny` to block any access.
 
 ### Implementation notes
 
