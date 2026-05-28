@@ -8,6 +8,7 @@
 * 2026-05-13: @id Merge ideas from #94: MQTT/WS listener bind in `hardened`, dashboard rejection hint, tighter v7 default ACL rules
 * 2026-05-19: @savonarola Use new `who()` condition in `acl.conf` instead of `authorization.no_match=profile` for simplifying the transition. Target 6.3 release for the changes.
 * 2026-05-26: @savonarola Use `deny` for failures in external authorization backends.
+* 2026-05-28: @savonarola Add password hashing algorithm restrictions in `hardened` mode.
 * 2026-06-05: @savonarola Add ACL checks for Management API induced subscriptions and publishes.
 * 2026-06-05: @savonarola Use fail-closed authentication behavior for authenticator errors in `hardened`.
 * 2026-06-11: @savonarola Make JWT JWKS transport secure by default in `hardened`.
@@ -30,7 +31,8 @@ empty;
 falling through to potentially weaker authenticators;
 * requiring authenticated transport by default when fetching JWT JWKS signing
 keys;
-* enabling ACL checks by default for Management API operations that force MQTT clients to subscribe or publish.
+* enabling ACL checks by default for Management API operations that force MQTT clients to subscribe or publish;
+* rejecting insecure password hashing algorithms.
 
 For authorization fallback, this proposal extends `acl.conf`'s syntax.
 It adds a new `who()` condition: `{security_profile, legacy| hardened}` which is true when the
@@ -88,6 +90,7 @@ supported values.
 | Authenticator backend, verification, precondition, or stored-record errors | May fall through to later authenticators | Denied when security-relevant for the client |
 | JWT JWKS signing-key transport defaults | Existing outbound HTTP/TLS defaults | HTTPS with TLS peer verification required by default |
 | Default `check_acl` for Management API induced client subscriptions and publishes | `false` | `true` |
+| Password hashing algorithms and parameters | Existing behavior preserved | Only secure algorithms and parameters are accepted; insecure algorithms are rejected at config time |
 
 ### Dashboard login rejection message
 
@@ -195,6 +198,126 @@ callers can induce client subscribe/publish operations without checking the
 target client's ACL. In `hardened`, the default closes this privilege-escalation
 path unless the API caller explicitly sets `check_acl` to `false` in the request.
 
+### Password hashing algorithm restrictions
+
+Password hashing algorithms have OWASP-recommended minimums. Fast hashes such
+as plain, md5, sha, sha256, and sha512 are explicitly
+declared as insecure by [OWASP Password Storage Cheat
+Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+
+OWASP recommends Argon2id as the preferred password hashing algorithm, with
+scrypt as the next choice when Argon2id is unavailable. EMQX should introduce
+support for these algorithms and use Argon2id for new password hashes in the
+`hardened` profile as default. Until those algorithms are available, hardened deployments
+must use PBKDF2-HMAC-SHA256 with 600,000 iterations.
+
+Insecure password hashing algorithms are:
+
+* simple password hashing algorithms: `plain`, `md5`, `sha`, `sha256`, `sha512`;
+* PBKDF2 with weak or non-recommended MAC functions: `md4`, `md5`,
+  `ripemd160`, `sha`, `sha224`;
+* PBKDF2 with an iteration count below the OWASP minimum for the selected MAC
+  function;
+* bcrypt with a work factor below the OWASP minimum.
+
+Secure (as for the moment of writing) password hashing algorithms are:
+
+* Argon2id with OWASP-compliant memory, iteration, and parallelism parameters;
+* scrypt with OWASP-compliant CPU/memory cost, block size, and parallelization
+  parameters;
+* bcrypt with `salt_rounds >= 10`;
+* PBKDF2-HMAC-SHA256 with at least 600,000 iterations;
+* PBKDF2-HMAC-SHA384 with at least 600,000 iterations (take OWASP recommendations for SHA256);
+* PBKDF2-HMAC-SHA512 with at least 220,000 iterations.
+
+The `hardened` profile works as follows.
+
+#### Hardened mode for built-in databases
+
+For build-in databases, the `hardened` profile rejects insecure password hashing configurations at
+config time. It allows configuring secure password hashes only.
+
+For compatibility support,
+* A new setting `migrate_from` for password hashing is added. It may contain _legacy_
+password hashing parameters, which are likely to be invalid in the `hardened` profile.
+* A new `extra` entry is introduced, `algo`, containing the algorithm to use for password verification.
+* We create new users in `emqx_authn_mnesia_ns` table (even for global ns).
+
+When authenticating a legacy existing user, the `algo` field in the `extra` entry is empty.
+In this case, the `migrate_from` setting is used to determine the algorithm to use for password verification.
+
+When a new user is created, the `algo` field in the `extra` entry is set to the algorithm specified in the actual settings.
+
+When a new user is authenticated, the `algo` field in the `extra` entry is used to determine the algorithm to use for password verification.
+
+Example.
+
+We have a legacy setup with
+
+```
+password_hash_algorithm {
+    name = sha256
+    salt_position = prefix
+}
+```
+
+We want to update to EMQX_SECURITY_PROFILE=hardened. `sha256` is no longer supported in `hardened` mode, so we update to config:
+
+```
+password_hash_algorithm {
+    name = pbkdf2
+    iterations = 300000
+    ...
+    migrate_from {
+        name = sha256
+        salt_position = prefix
+    }
+}
+```
+
+When a ns user
+```erlang
+#emqx_authn_mnesia_ns{
+    user_id = {<<"ns">>, <<"g">>, <<"userid">>},
+    password_hash = <<"...sha256...">>
+    salt = <<"...">>
+    is_superuser = false
+    extra = #{}
+}
+```
+or a global user
+```erlang
+#emqx_authn_mnesia{
+    user_id = {<<"g">>, <<"userid">>},
+    password_hash = <<"...sha256...">>
+    salt = <<"...">>
+    is_superuser = false
+}
+```
+logs in, there is no algo, and we assume `migrate_from` parameters are applicable: `sha256` and prefixed salt.
+
+When we create or update a user, we create or update the record in the ns table only:
+```erlang
+#emqx_authn_mnesia_ns{
+    user_id = {<<"ns">>, <<"g">>, <<"userid">>},
+    password_hash = <<"...pbkdf2_sha512...">>
+    salt = <<"...">>
+    is_superuser = false
+    extra = #{
+      algo = #{name => pbkdf2, iterations => ...}
+    }
+}
+```
+
+When a new user logs in, we respect `algo` field for authentication.
+
+#### `hardened` mode for external DB authentication
+
+For external DB authentication, we do not limit insecure algorithms since we are not
+responsible for securing the auth data. But we issue a warning if an insecure algorithm is used:
+* in the logs on start;
+* in the dashboard when configuring the backends.
+
 ### Implementation notes
 
 * Resolve profile once at boot and make it available to relevant subsystems.
@@ -211,6 +334,8 @@ path unless the API caller explicitly sets `check_acl` to `false` in the request
 * For management API publish/subscribe:
   * Extend `emqx:publish/1` with opts which go to the underlying `emqx_broker:publish/2` opts. Add a new option `check_acl => boolean()`.
   * Extend `emqx_management_proto_v5:subscribe/3` to receive opts; extend channels to support `{subscribe, TopicFilters, Options}`. Add a new option `check_acl => boolean()`.
+* For authentication, we need to use NIF-based password hashing libraries to be
+  able to create passwords with a relevant level of complexity with acceptable effort.
 
 ## Configuration Changes
 
@@ -234,6 +359,9 @@ Default `acl.conf` changes:
 %% 6.2 and 6.3 default
 {allow, {security_profile, legacy}}.
 ```
+
+Password hash algorithm defaults become profile-aware. The `legacy` profile
+preserves existing defaults, while the `hardened` profile uses a secure default.
 
 ## Backwards Compatibility
 
@@ -303,6 +431,9 @@ Add automated coverage for both profile values:
   existing administrator-level API behavior is preserved.
 * Management API induced subscribe/publish behavior when `check_acl` is omitted:
   it defaults to `false` in `legacy` and `true` in `hardened`.
+* password hashing behavior in `legacy` and `hardened` profiles, including
+  legacy compatibility, hardened rejection of insecure configurations, and
+  hardened secure defaults.
 
 Include integration tests to verify environment-variable-driven behavior in real
 startup flows.
@@ -313,3 +444,5 @@ startup flows.
 * Keep ACL `{check, "$EMQX_SECURITY_PROFILE"}` as the catch-all mechanism.
 * Remove default `{allow, all}.` from 6.2 immediately.
 * For Management subscribe/publish API, enforce ACL checks by config settings (instead of request argument). This just limits conveniency of UX, and does not give any additional guarantees.
+* Accept insecure algorithms at config time in `hardened` mode but log warnings
+  (this would allow misconfiguration to go undetected).
