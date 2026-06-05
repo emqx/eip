@@ -9,6 +9,7 @@
 * 2026-05-19: @savonarola Use new `who()` condition in `acl.conf` instead of `authorization.no_match=profile` for simplifying the transition. Target 6.3 release for the changes.
 * 2026-05-26: @savonarola Use `deny` for failures in external authorization backends.
 * 2026-06-05: @savonarola Add ACL checks for Management API induced subscriptions and publishes.
+* 2026-06-05: @savonarola Use fail-closed authentication behavior for authenticator errors in `hardened`.
 
 ## Abstract
 
@@ -24,6 +25,8 @@ known default Erlang cookies;
 admin password;
 * denying anonymous MQTT login when authentication chain is
 empty;
+* denying authentication on security-relevant authenticator errors instead of
+falling through to potentially weaker authenticators;
 * enabling ACL checks by default for Management API operations that force MQTT clients to subscribe or publish.
 
 For authorization fallback, this proposal extends `acl.conf`'s syntax.
@@ -79,6 +82,7 @@ supported values.
 | MQTT/WS listener default bind (`tcp.default`, `ssl.default`, `ws.default`, `wss.default`) | `0.0.0.0` | `127.0.0.1` |
 | Dashboard admin password `public` | Login allowed | Login denied until password is changed |
 | MQTT anonymous login when auth chain is empty | Allowed | Denied |
+| Authenticator backend, verification, precondition, or stored-record errors | May fall through to later authenticators | Denied when security-relevant for the client |
 | Default `check_acl` for Management API induced client subscriptions and publishes | `false` | `true` |
 
 ### Dashboard login rejection message
@@ -112,6 +116,27 @@ actions requiring authorization to trigger backend failures.
 
 With the `hardened` profile, authz changes the behaviour.  
 On backend failure because of unavailability or misconfiguration, EMQX returns `deny` to block any access.
+
+### Authentication behavior on authenticator errors
+
+Currently, some authenticators and shared authentication-chain paths convert
+security-relevant failures to `ignore` or provider failure and continue to later
+authenticators. Examples include external backend errors, unexpected backend
+results, verification failures for credentials that matched an authenticator's
+scope, precondition-render failures caused by malformed or missing client data,
+and malformed stored credential records. In a chain with a weaker fallback, this
+can let a failed stronger authenticator fall through to a less strict one.
+
+With the `hardened` profile, authentication must fail closed for
+security-relevant authenticator failures. If an authenticator is applicable to a
+client and encounters a backend error, malformed backend result, unsupported
+outcome, credential verification error, precondition-render error, or malformed
+stored credential data, the chain must deny authentication instead of treating
+the result as no-match and continuing to later authenticators.
+
+The `legacy` profile preserves existing chain behavior for compatibility, where
+such failures may be treated as no-match and the chain may continue to later
+authenticators.
 
 ### Management API induced subscribe/publish ACL checks
 
@@ -157,6 +182,10 @@ path unless the API caller explicitly sets `check_acl` to `false` in the request
 * Ensure logs clearly show active profile and any compatibility behavior in
   `legacy`.
 * Keep behavior deterministic across node restart and cluster join.
+* For authentication chains in `hardened`, distinguish true authenticator
+  no-match from security-relevant provider failure. Provider failure must stop
+  the chain with authentication denied when the authenticator was applicable to
+  the client.
 * For management API publish/subscribe:
   * Extend `emqx:publish/1` with opts which go to the underlying `emqx_broker:publish/2` opts. Add a new option `check_acl => boolean()`.
   * Extend `emqx_management_proto_v5:subscribe/3` to receive opts; extend channels to support `{subscribe, TopicFilters, Options}`. Add a new option `check_acl => boolean()`.
@@ -196,7 +225,10 @@ during transition and then remediating to move to `hardened`.
 
 When the request omits `check_acl`, Management API induced subscribe/publish ACL
 checks are disabled by default in `legacy`, preserving the existing EMQX 6.2
-administrator-level API behavior. 
+administrator-level API behavior.
+
+Authenticator error handling remains compatible in `legacy`: provider failures
+and `ignore` results can continue to later authenticators as before.
 
 No MQTT wire protocol changes are introduced.
 
@@ -228,6 +260,12 @@ Add automated coverage for both profile values:
   default `acl.conf` becomes `{allow, {security_profile, legacy}}.`;
 * default behavior in 6.3:
   `EMQX_SECURITY_PROFILE=hardened` (unset) and default `acl.conf` remains `{allow, {security_profile, legacy}}.`.
+* authentication chain behavior in `hardened`: backend errors, malformed backend
+  results, unsupported outcomes, verification errors, precondition-render
+  errors, and malformed stored credential records deny authentication instead of
+  falling through to a weaker later authenticator.
+* authentication chain behavior in `legacy`: existing fall-through behavior is
+  preserved for compatibility.
 * Management API induced subscribe/publish behavior with `check_acl=true`:
   an API-induced operation is denied when the target MQTT client's ACL denies the
   corresponding MQTT `SUBSCRIBE` or `PUBLISH` action.
