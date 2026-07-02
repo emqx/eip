@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500">
+  <defs>
+    <pattern id="bricks" width="72" height="44" patternUnits="userSpaceOnUse">
+      <rect width="72" height="44" fill="#a64f3c"/>
+      <path d="M0 0H72M0 22H72M0 44H72M36 0V22M18 22V44" fill="none" stroke="#f0d0b5" stroke-width="4"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-opacity=".18"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="500" rx="28" fill="#f7f8fa"/>
+
+  <rect x="80" y="170" width="365" height="160" rx="18" fill="#fff0dc" stroke="#dc6b19" stroke-width="4" filter="url(#shadow)"/>
+  <text x="262.5" y="250" text-anchor="middle" dominant-baseline="central" font-family="Inter, Arial, sans-serif" font-size="32" font-weight="650" fill="#8f390d">Before authentication</text>
+
+  <rect x="545" y="55" width="110" height="390" rx="3" fill="url(#bricks)" stroke="#653126" stroke-width="7" filter="url(#shadow)"/>
+
+  <rect x="755" y="170" width="365" height="160" rx="18" fill="#e7f7ec" stroke="#39854c" stroke-width="4" filter="url(#shadow)"/>
+  <text x="937.5" y="250" text-anchor="middle" dominant-baseline="central" font-family="Inter, Arial, sans-serif" font-size="32" font-weight="650" fill="#245b31">After authentication</text>
+</svg>
