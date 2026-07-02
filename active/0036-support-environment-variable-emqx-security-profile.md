@@ -205,32 +205,28 @@ as plain, md5, sha, sha256, and sha512 are explicitly
 declared as insecure by [OWASP Password Storage Cheat
 Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
 
-OWASP recommends Argon2id as the preferred password hashing algorithm, with
-scrypt as the next choice when Argon2id is unavailable. EMQX should introduce
-support for these algorithms and use Argon2id for new password hashes in the
-`hardened` profile as default. Until those algorithms are available, hardened deployments
-must use PBKDF2-HMAC-SHA256 with 600,000 iterations.
+For the `hardened` profile, EMQX uses PBKDF2 with an OWASP-compliant MAC
+function and iteration count.
 
 Insecure password hashing algorithms are:
 
 * simple password hashing algorithms: `plain`, `md5`, `sha`, `sha256`, `sha512`;
+* non-PBKDF2 password hashing algorithms;
 * PBKDF2 with weak or non-recommended MAC functions: `md4`, `md5`,
   `ripemd160`, `sha`, `sha224`;
 * PBKDF2 with an iteration count below the OWASP minimum for the selected MAC
-  function;
-* bcrypt with a work factor below the OWASP minimum.
+  function.
 
 Secure (as for the moment of writing) password hashing algorithms are:
 
-* Argon2id with OWASP-compliant memory, iteration, and parallelism parameters;
-* scrypt with OWASP-compliant CPU/memory cost, block size, and parallelization
-  parameters;
-* bcrypt with `salt_rounds >= 10`;
 * PBKDF2-HMAC-SHA256 with at least 600,000 iterations;
 * PBKDF2-HMAC-SHA384 with at least 600,000 iterations (take OWASP recommendations for SHA256);
 * PBKDF2-HMAC-SHA512 with at least 220,000 iterations.
 
-The `hardened` profile works as follows.
+The default password hashing configuration should also be secure under the
+`hardened` profile. The hardened default is PBKDF2-HMAC-SHA256 with 600,000
+iterations. The `legacy` profile preserves existing defaults and accepted
+algorithms for compatibility.
 
 #### Hardened mode for built-in databases
 
