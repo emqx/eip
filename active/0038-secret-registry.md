@@ -3,6 +3,7 @@
 ## Changelog
 
 * 2026-05-21: @zmstone Initial draft
+* 2026-07-20: @zmstone Add namespace scoping / isolation
 
 ## Abstract
 
@@ -26,6 +27,11 @@ non-goals for v1.
 Read-back over the API returns metadata only -- the stored byte string
 never leaves the broker except as part of a rendered template at the
 moment the template is used.
+
+Secrets are namespace-scoped: a secret is owned by the namespace of
+the principal that created it, a namespaced reference resolves
+against that namespace first and falls back to the global registry,
+and a global reference never resolves to a namespace-owned secret.
 
 ## Motivation
 
@@ -91,13 +97,19 @@ Record:
 
 ```
 {emqx_secret,
-   name        :: binary(),      %% primary key, ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$
+   key         :: {?global_ns | binary(), binary()},  %% {OwnerNs, Name}
    value       :: binary(),      %% raw bytes, UTF-8 well-formed
    description :: binary(),      %% operator-supplied free-form note, optional
    created_at  :: integer(),     %% monotonic millis
    updated_at  :: integer()      %% monotonic millis
 }
 ```
+
+The primary key is the `{OwnerNs, Name}` pair, following the v2
+topic-metrics precedent (`emqx_topic_metrics_mria`, keyed
+`{'_' | global | binary(), '_' | binary()}`). Names are unique
+*within* a namespace, not cluster-wide. See "Namespace scoping"
+below.
 
 Constraints:
 
@@ -108,8 +120,13 @@ Constraints:
   check. PEM-encoded private keys (newline-containing) are permitted.
 * `description` is at most 512 bytes, UTF-8, control-character-free
   except whitespace.
-* The total number of secrets in the cluster is capped at 1024 (configurable;
-  see Configuration Changes).
+* The total number of secrets is capped at 1024 **per namespace**
+  (configurable; see Configuration Changes), with the global namespace
+  counting as one namespace for this purpose. A per-namespace cap
+  rather than a cluster-wide one keeps one tenant from exhausting the
+  registry for everyone; the precedents are `?MAX_NUM_TNS_CONFIGS`
+  (1000 managed namespaces) and `?MAX_COLLECTIONS` (512 topic-metric
+  collections).
 
 ### Sanitization
 
@@ -358,6 +375,10 @@ Endpoints:
   Removes the secret. The renderer's strict-fail behavior applies to
   any subsequent template render that references the deleted name.
 
+All five endpoints accept a `?ns=<namespace>` query parameter and are
+scoped to the caller's namespace; see "Namespace scoping and
+isolation" above.
+
 ### Logging and tracing
 
 All log emissions involving template rendering must go through the
@@ -401,6 +422,180 @@ during implementation). This means:
 The secret registry does **not** require its own shard, its own
 quorum, or any cluster-wide RPC during render. Render-time lookups
 are local mnesia dirty reads.
+
+### Namespace scoping and isolation
+
+EMQX supports namespaces (multi-tenancy) for connectors, actions,
+sources, rules, authn / authz built-in-database records, managed
+certificates, and topic metrics. Secrets are referenced from
+precisely those resources, so the registry must be namespace-aware or
+it becomes the one shared mutable surface that punches through tenant
+isolation.
+
+#### Ownership model
+
+Every secret is owned by exactly one namespace. The owner is the
+namespace of the principal that created it, determined the same way
+every other namespaced API determines it:
+
+* The namespace is encoded in the API key / dashboard user role as
+  `ns:<namespace>::<role>` and parsed by
+  `emqx_dashboard_rbac:parse_role/1`.
+* At the HTTP boundary `emqx_dashboard:get_namespace/1` reads it out
+  of `auth_meta`, defaulting to `?global_ns`.
+* A `resolve_namespace/2` minirest filter stores the effective
+  namespace as `resolved_ns` on the request, applying the established
+  rule: a **global** admin may act on any namespace by passing
+  `?ns=<namespace>`; a **namespaced** admin is pinned to their own and
+  gets `not_authorized` if they pass a different one. This mirrors
+  `emqx_connector_api:parse_namespace/1`.
+
+A secret created with a global API key is owned by `?global_ns`. A
+secret created with a namespace-scoped API key is owned by that
+namespace.
+
+#### Resolution: namespace first, then global fallback
+
+This is the requirement raised in review: an operator needs one
+system-wide secret usable from a *global* HTTP authn hook **and**
+from a *namespace-scoped* HTTP hook, while namespaces must also be
+able to hold their own private secrets.
+
+Resolution of a bare name `N` from a context running in namespace
+`NS` is therefore:
+
+1. Look up `{NS, N}`. On hit, use it.
+2. On miss, look up `{?global_ns, N}`. On hit, use it.
+3. On miss, apply the strict-fail behavior described earlier.
+
+Resolution from a context running in the global namespace looks up
+`{?global_ns, N}` **only**. There is no upward fallback — a global
+configuration can never resolve to a namespace-owned secret. That
+direction would let a tenant inject a value into a broker-wide code
+path, which is exactly the isolation break we are trying to avoid.
+
+Two existing fallback designs are in tree and they differ
+deliberately:
+
+* `emqx_authz_mnesia:load_rules_for_authorize/3` falls back to global
+  per lookup, whenever the namespaced lookup yields nothing.
+* `emqx_authn_mnesia:lookup_user_with_fallback/3` falls back **only
+  if the namespace has no records at all**, precisely to avoid
+  per-user shadowing in a partially-provisioned namespace.
+
+We adopt the authz (per-name) granularity. The authn concern does not
+transfer: a partially-populated namespace of *users* creates an
+authentication bypass, whereas a namespace that defines some of its
+own secrets and inherits the rest is the intended operating mode for
+this feature — "the tenant overrides the shared backend token but
+inherits the shared signing key."
+
+#### Shadowing is an override, and it is bounded
+
+A namespace can define `{NS, "prod_token"}` while `{global,
+"prod_token"}` also exists. The namespaced one wins for anything
+running in `NS`. This is deliberate — it is how a tenant overrides an
+inherited default — and it is safe because the only configurations
+that resolve through `NS` are configurations *owned by* `NS`. A
+tenant can redirect their own bridges to their own credential; they
+cannot affect anyone else's.
+
+For the cases where an operator wants to defeat shadowing and pin a
+reference to the global registry explicitly, both reference syntaxes
+accept a qualified form:
+
+* `$secret{global::<name>}` for the placeholder.
+* `secret://global/<name>` for the HOCON URI.
+
+The unqualified forms keep their fallback semantics. `global` is
+already a reserved namespace name
+(`emqx:is_reserved_namespace/1` rejects `global`, `undefined`,
+`null`, `none`), so the qualifier cannot collide with a real
+namespace.
+
+We do **not** adopt the managed-certs convention of an explicit
+optional `namespace` field defaulting to global
+(`emqx_schema:fields("managed_certs")`, resolved in
+`emqx_tls_lib:resolve_managed_certs/2`) — that form permits arbitrary
+cross-namespace references and currently performs no authorization
+check on them. Only two targets are reachable here: the caller's own
+namespace and global.
+
+#### Where the namespace comes from at resolution time
+
+Each of the three access paths already has the namespace in hand:
+
+| Access path | Source of namespace |
+|---|---|
+| `secret://<name>` in a connector / action / source config | The resource is namespaced; the namespace is carried in the resource id (`ns:<Ns>:connector:<Type>:<Name>`) and extractable via `emqx_resource:extract_namespace_from_resource_id/1`. |
+| `$secret{<name>}` in an HTTP bridge / action template | Same — the rendering happens inside a namespaced resource. |
+| `$secret{<name>}` / `get_secret('<name>')` in a rule | The rule record carries `namespace`; `emqx_rule_runtime` already propagates it into every action invocation and trace context. |
+| `$secret{<name>}` in an HTTP authn / authz request template | The authenticator / authz source is itself namespaced; the namespace comes from the chain the client authenticated against. |
+
+The practical implication for implementation is that
+`emqx_secret_loader:load/1` and the template renderer hooks must take
+a `maybe_namespace()` argument rather than a bare name. Threading
+that argument through every call site is the bulk of the work — a
+default-to-global arity-1 wrapper would compile, and would silently
+resolve every namespaced lookup against the global registry. It must
+not be added.
+
+#### API surface
+
+The endpoints described above gain the standard namespace plumbing:
+
+* A `?ns=<namespace>` query parameter on all five endpoints, honoured
+  for global admins, rejected for namespaced admins naming a
+  namespace other than their own.
+* `validate_managed_namespace/2` on create — running the
+  `'namespace.resource_pre_create'` hook, returning
+  `Managed namespace not found` for an unknown namespace, exactly as
+  the connector / rule / authn APIs do. `DELETE` is exempted for
+  global admins so orphaned secrets can be cleaned up after a
+  namespace is gone.
+* A `?SECRETS_API` clause in `emqx_dashboard_rbac:do_check_rbac/3`.
+  Without it the catch-all denies namespaced admins outright.
+
+One caveat has to be recorded explicitly. `do_check_rbac/3` currently
+contains a blanket clause allowing **any** `GET` for a namespaced
+superuser, on the documented rationale that "namespaces are mostly to
+avoid accidentally mutating the wrong resources rather than hiding
+information." For this feature that rationale does not hold: a
+namespaced admin must not be able to enumerate another tenant's
+secret *names*, since names are chosen by operators and routinely
+describe the system they unlock. The secrets API therefore filters
+list / get results by `resolved_ns` **in the handler**, not relying
+on the RBAC layer. A namespaced admin listing secrets sees their own
+namespace's secrets plus the global ones they can inherit; never
+another namespace's.
+
+Values are never returned by any endpoint regardless of namespace, so
+the isolation being enforced here is over names and metadata only.
+
+#### Namespace deletion
+
+The registry subscribes to the `'namespace.delete'` hookpoint and
+deletes all rows keyed `{NS, _}`. Secrets live outside the config
+tree, so the `emqx_mt_config_janitor` config-root teardown does not
+reach them — a hook callback is required, not optional. This is the
+same gap that authn / authz namespaced mnesia rows and v2
+topic-metrics collections currently have; we should not add a third
+instance of it.
+
+The callback must be idempotent and retry-safe: the janitor re-scans
+tombstones periodically and re-runs cleanup if a previous attempt
+failed.
+
+Deleting a namespace does **not** touch global secrets, including
+ones the namespace's configurations were resolving via fallback.
+
+#### Backup / export
+
+The registry is excluded from backup entirely (see "Backup / export"
+above), so there is no per-namespace export behavior to define. Were
+it to become opt-in later, the export must be filtered by the
+requesting principal's namespace — a namespaced admin's export must
+not carry global or sibling-namespace secrets.
 
 ## Configuration Changes
 
@@ -450,6 +645,22 @@ required template variables in HTTP bridges.
 * Backup tests: `emqx ctl data export` produces an archive that
   contains no secret values; `data import` rejects archives
   containing a secrets table when the cluster already has secrets.
+* Namespace tests -- the isolation-critical class:
+  * A namespaced config resolves a bare name to its own namespace's
+    secret when one exists, and to the global one when it does not.
+  * A global config never resolves to a namespace-owned secret, even
+    when the name exists only in a namespace.
+  * Shadowing: `{NS, "tok"}` wins over `{global, "tok"}` for
+    configurations in `NS`, and leaves other namespaces' resolution
+    unaffected.
+  * `$secret{global::name}` / `secret://global/name` bypass a
+    shadowing namespace-local entry.
+  * A namespaced admin cannot create, read, update, delete, or
+    **list** another namespace's secrets; a global admin can act on
+    any namespace via `?ns=`.
+  * Per-namespace cap is enforced per namespace, not cluster-wide.
+  * `'namespace.delete'` removes exactly that namespace's secrets and
+    leaves global ones intact; re-running the cleanup is a no-op.
 * HTTP-header byte check composition: a stored secret whose value
   contains CR / LF is accepted at storage time (UTF-8-only check
   passes), but rejected at the HTTP bridge connector when used as a
