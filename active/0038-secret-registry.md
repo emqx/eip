@@ -8,10 +8,10 @@
   disclosure, so secrets are reachable only within their own scope (namespace
   or global), with no fallback in either direction
 * 2026-07-24: @zmstone Reintroduce namespace→global sharing via a per-global
-  `share_ns` flag (default true): a namespaced reference falls back to a global
-  secret when that global secret is marked shareable. Global→namespace and
-  sibling-namespace resolution remain forbidden. `share_ns = false` keeps a
-  global secret tenant-invisible
+  `share_ns` flag (default **false**, opt-in): a namespaced reference falls back
+  to a global secret only when that global secret is explicitly marked
+  shareable. A global secret is tenant-invisible by default. Global→namespace
+  and sibling-namespace resolution remain forbidden
 
 ## Abstract
 
@@ -39,25 +39,26 @@ moment the template is used.
 Secrets are scoped: a secret is owned by the scope of the principal
 that created it — a namespace, or global. A namespaced reference
 resolves against its own namespace first, then falls back to a global
-secret **only if that global secret is marked shareable** (`share_ns`,
-default true). A global secret with `share_ns = false`, and every
-namespace's own secrets, stay private to their scope. A global
-configuration never resolves a namespace's secret, and one namespace
-never resolves another's — so the single cross-scope path is
-namespace→shareable-global, and it runs one way.
+secret **only if that global secret is explicitly marked shareable**
+(`share_ns`, default **false**). A global secret left at the default,
+and every namespace's own secrets, stay private to their scope. A
+global configuration never resolves a namespace's secret, and one
+namespace never resolves another's — so the single cross-scope path is
+namespace→shareable-global, it is opt-in, and it runs one way.
 
 This shape follows from one observation. Because a secret is resolved
 by rendering it into outbound bytes, and the principals who reference
 secrets are the same principals who choose where those bytes go, the
 ability to *reference* a secret is equivalent to the ability to *read*
-its value. Marking a global secret shareable is therefore a deliberate
-decision to disclose its value to every namespace's administrators;
-`share_ns = false` is how a global secret is kept tenant-invisible.
-The no-read-back API bounds exposure of secrets at rest (config dumps,
-backups, logs) but is not an access-control boundary between "can
-configure" and "can learn the value"; cross-scope isolation is
-enforced by non-reachability, which `share_ns = true` deliberately
-opens for a single global secret at a time.
+its value. Marking a global secret shareable (`share_ns = true`) is
+therefore a deliberate decision to disclose its value to every
+namespace's administrators — which is why the default is private: a
+global secret is tenant-invisible unless an operator opts it into
+sharing. The no-read-back API bounds exposure of secrets at rest
+(config dumps, backups, logs) but is not an access-control boundary
+between "can configure" and "can learn the value"; cross-scope
+isolation is enforced by non-reachability, which `share_ns = true`
+deliberately opens, one global secret at a time.
 
 ## Motivation
 
@@ -131,7 +132,7 @@ Record:
 {emqx_secret,
    key         :: {?global_ns | binary(), binary()},  %% {Scope, Name}
    value       :: binary(),      %% raw bytes, UTF-8 well-formed
-   share_ns    :: boolean(),     %% global secret reachable from namespaces? default true
+   share_ns    :: boolean(),     %% global secret reachable from namespaces? default false
    description :: binary(),      %% operator-supplied free-form note, optional
    created_at  :: integer(),     %% monotonic millis
    updated_at  :: integer(),     %% monotonic millis
@@ -141,9 +142,9 @@ Record:
 
 The owning scope (`?global_ns` or a namespace) is the first element
 of the key. `share_ns` governs whether a **global** secret is
-reachable from namespaces by fallback (default `true`); it has no
-effect on a namespace-owned secret, which is never shared into a
-narrower scope. `extra` is an empty map reserved so later versions can
+reachable from namespaces by fallback (default `false` — sharing is
+opt-in); it has no effect on a namespace-owned secret, which is never
+shared into a narrower scope. `extra` is an empty map reserved so later versions can
 add fields without a schema migration. See "Resolution" and
 "Namespace scoping and isolation" below.
 
@@ -407,7 +408,7 @@ Endpoints:
   "share_ns": true }`
   Creates a new secret in the caller's scope. Errors on name
   collision within that scope. `share_ns` is accepted only for global
-  secrets (defaults to `true`); it is rejected for a namespaced
+  secrets (defaults to `false`); it is rejected for a namespaced
   create.
 * `GET /api/v5/secrets`
   Returns a paginated list of `{ name, description, scope, share_ns,
@@ -559,9 +560,9 @@ relative to the scope of the *configuration that contains it* (see
   On a hit the namespace's own secret is used — a namespace-owned
   secret **shadows** a global one of the same name.
 * On a miss, resolution falls back to `{?global_ns, N}` **only if
-  that global secret is marked `share_ns = true`** (the default). A
-  global secret with `share_ns = false` is invisible to the fallback,
-  exactly as if it did not exist.
+  that global secret is explicitly marked `share_ns = true`**. Sharing
+  is opt-in: a global secret at the default (`share_ns = false`) is
+  invisible to the fallback, exactly as if it did not exist.
 * A reference evaluated in the **global** scope resolves
   `{?global_ns, N}` **only** — there is no global→namespace fallback.
 * On a final miss the strict-fail behavior described earlier applies
@@ -576,32 +577,36 @@ crosses a scope boundary. A namespace never resolves another
 namespace's secret, and a global configuration never resolves a
 namespace's.
 
-**Why a fallback, and why default-shareable.** The common operational
-case is a single backend credential used by both a global pipeline
-and one or more tenants' pipelines — e.g. a multi-tenant target
-system whose API key authenticates a global authn hook *and* is
-required by each namespace's message-forwarding action (the review
-scenario that prompted this revision). Without fallback, every
-namespace admin has to be handed a copy of that credential to store
-in their own namespace; rotation then becomes N-touch across
-namespaces, and — because referencing a secret already discloses its
-value — those copies grant the tenant admins nothing they would not
-already obtain by referencing a single shared original. Fallback
-removes the copy sprawl without changing who can read the value.
-Default `true` optimizes for that common case; `share_ns = false` is
-the explicit opt-out for a global secret that must stay invisible to
-tenants (the "secret hidden from namespace users" case raised in
-review).
+**Why a fallback at all.** The operational case it serves is a single
+backend credential used by both a global pipeline and one or more
+tenants' pipelines — e.g. a multi-tenant target system whose API key
+authenticates a global authn hook *and* is required by each
+namespace's message-forwarding action (the review scenario that
+prompted this revision). Without fallback, every namespace admin has
+to be handed a copy of that credential to store in their own
+namespace; rotation then becomes N-touch across namespaces, and —
+because referencing a secret already discloses its value — those
+copies grant the tenant admins nothing they would not already obtain
+by referencing a single shared original. Fallback removes the copy
+sprawl without changing who can read the value.
 
-**The security cost, stated plainly.** Because reference implies
+**Why the default is nonetheless `false`.** Because reference implies
 disclosure, `share_ns = true` on a global secret discloses its value
 to the administrators of **every** namespace — any of them can
 reference it (its name is listed to them, not guessed; see "API
-surface") in a resource they control and render it out. Mark a global
-secret shareable only when disclosure to all tenants is acceptable.
-This is a coarse, all-namespaces switch; a *targeted* "share to these
-namespaces only" grant is a possible future refinement, and
-`share_ns` is its all-or-nothing zero case (see "Declined
+surface") in a resource they control and render it out. Fallback is
+therefore convenient but not free, so it is off until an operator
+turns it on: a global secret is private to the global scope unless
+someone deliberately marks it shareable. The default protects the
+credential that was *not* meant to be tenant-facing (the "secret
+hidden from namespace users" case raised in review); enabling
+`share_ns` on the genuinely-shared backend credential is a one-time,
+per-secret decision made by whoever already holds the value. Mark a
+global secret shareable only when disclosure to all tenants is
+acceptable. This is a coarse, all-namespaces switch; a *targeted*
+"share to these namespaces only" grant is a possible future
+refinement, and `share_ns` is its all-or-nothing zero case (see
+"Declined
 alternatives").
 
 #### The resolving scope is the configuration's, not the client's
@@ -911,13 +916,13 @@ considered and declined for v1:
 
 1. **Namespace→global fallback with no opt-out** — the shape of an
    earlier draft: any namespaced miss falls through to global
-   unconditionally. Rejected because it offers no way to keep a global
-   secret tenant-invisible; a name-guess from any namespace would
-   exfiltrate any global secret. `share_ns` (default `true`) keeps the
-   convenient default while restoring that control — a global secret
-   that must not be disclosed to tenants is marked `share_ns = false`,
-   at which point it is unreachable from and unlisted to every
-   namespace.
+   unconditionally. Rejected because it discloses every global secret
+   to every tenant with no way to hold one back; a name-guess from any
+   namespace would exfiltrate any global secret. The per-secret,
+   opt-in `share_ns` (default `false`) restores that control — a global
+   secret is unreachable from and unlisted to every namespace until an
+   operator deliberately marks it `share_ns = true`, so the credential
+   that was never meant to be tenant-facing stays private by default.
 2. **Per-namespace allowlist** — a global secret carries the list of
    namespaces it is offered to ("share to these tenants only"). This
    is the *honest, targeted* form of disclosure and the natural
