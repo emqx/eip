@@ -12,6 +12,10 @@
   to a global secret only when that global secret is explicitly marked
   shareable. A global secret is tenant-invisible by default. Global→namespace
   and sibling-namespace resolution remain forbidden
+* 2026-07-24: @zmstone A stored value may be a `file://` / `env://` source
+  reference resolved at use time (per @savonarola), so file/env-delivered
+  secrets (Vault Agent, K8s secret volumes) are referenceable without copying
+  plaintext into the registry — no per-source placeholder variant
 
 ## Abstract
 
@@ -29,8 +33,12 @@ templates -- HTTP bridge headers / URLs / bodies, HTTP authn / authz
 request templates, webhook actions. It is not a general-purpose
 configuration store, not an MQTT publish payload source, and not a
 key-management service. Encryption at rest, automatic rotation, and
-secret-broker integration (Vault, AWS Secrets Manager) are explicit
-non-goals for v1.
+direct secret-broker API integration (Vault, AWS Secrets Manager) are
+explicit non-goals for v1 — though a stored value may be a
+`file://` / `env://` reference resolved at use time, so secrets
+delivered as files or environment variables (Vault Agent, Kubernetes
+secret volumes) can be referenced without copying their plaintext into
+the registry (see "Value indirection").
 
 Read-back over the API returns metadata only -- the stored byte string
 never leaves the broker except as part of a rendered template at the
@@ -108,7 +116,7 @@ This proposal targets EMQX v7.
 A new application `emqx_secret_registry` under `apps/` provides:
 
 * A cluster-wide mnesia / mria table storing
-  `#emqx_secret{{Scope, Name}, Value, ...metadata...}` rows (see
+  `#emqx_secret{key = {Scope, Name}, value = Value, ...metadata...}` rows (see
   "Storage shape"). Replicated to all nodes via the same shard
   mechanism used by existing config tables.
 * An HTTP API under `/api/v5/secrets/...` for create,
@@ -131,7 +139,7 @@ Record:
 ```
 {emqx_secret,
    key         :: {?global_ns | binary(), binary()},  %% {Scope, Name}
-   value       :: binary(),      %% raw bytes, UTF-8 well-formed
+   value       :: binary(),      %% literal bytes, or a file://|env:// source reference
    share_ns    :: boolean(),     %% global secret reachable from namespaces? default false
    description :: binary(),      %% operator-supplied free-form note, optional
    created_at  :: integer(),     %% monotonic millis
@@ -162,6 +170,10 @@ Constraints:
   cap. Names are case-sensitive.
 * `value` is at most 16 KiB. Stored as-is after a UTF-8 well-formedness
   check. PEM-encoded private keys (newline-containing) are permitted.
+  A `file://` / `env://` source reference (see "Value indirection") is
+  just a short value that passes the same check; the size / encoding
+  of the *resolved* bytes is the referenced source's concern, checked
+  at the use site like any literal value.
 * `description` is at most 512 bytes, UTF-8, control-character-free
   except whitespace.
 * The total number of secrets is capped at 1024 **per namespace**
@@ -171,6 +183,47 @@ Constraints:
   registry for everyone; the precedents are `?MAX_NUM_TNS_CONFIGS`
   (1000 managed namespaces) and `?MAX_COLLECTIONS` (512 topic-metric
   collections).
+
+### Value indirection: external sources
+
+A stored `value` is normally a literal byte string. It may instead be
+a **source reference** that EMQX resolves to bytes at use time:
+
+* `file://<path>` — read the bytes from a file on the resolving node's
+  filesystem.
+* `env://<VARNAME>` — read the bytes from an environment variable.
+
+The registry row then holds only the reference, never the underlying
+secret bytes. This is the interoperability path for operators who
+already deliver secrets through Vault Agent, Kubernetes secret
+volumes, or an init container: the external tooling drops the real
+secret as a file (or exports it into the environment), and the
+registry entry points at it. The plaintext never enters the mnesia
+table, the backup, or `cluster.hocon`, yet `$secret{<name>}`,
+`get_secret('<name>')`, and `secret://<name>` all keep working
+unchanged — resolution of the name simply yields the reference, which
+is then resolved one step further to the bytes.
+
+This reuses existing plumbing rather than adding a token per source:
+the same `emqx_secret_loader` / `emqx_schema_secret` machinery that
+already resolves `file://` for HOCON secret fields resolves the
+registry value. The source is chosen in the *value*, not pinned in the
+*template* — there is deliberately no `$secret_file{}` / `$secret_env{}`
+placeholder variant; `$secret{<name>}` is source-agnostic and the row
+decides where the bytes come from. A value is treated as a reference
+iff it matches `^(file|env)://`, the same scheme-detection convention
+`emqx_schema_secret` already uses (so, as today, a literal value that
+must itself begin with those characters is the one shape not
+expressible — not a concern for credentials).
+
+Resolution timing and failure follow the literal case exactly: the
+reference is resolved at render time (placeholders) or at connector /
+action start (`secret://` HOCON fields), and a resolution failure
+(file missing, variable unset) produces the same strict-fail as an
+unknown secret — name reported, value never. Because the stored value
+is a path or variable name and not the secret itself, it is not
+redaction-sensitive; the API's no-read-back rule is unchanged (the
+reference is still not returned, and neither is the resolved value).
 
 ### Sanitization
 
@@ -836,6 +889,13 @@ required template variables in HTTP bridges.
   passes), but rejected at the HTTP bridge connector when used as a
   header value. Verify the rejection path emits a log line that
   identifies the secret by name but not by value.
+* Value indirection: a secret stored as `file://<path>` resolves to
+  the file's bytes at use time and the mnesia row never contains the
+  plaintext; `env://<VAR>` resolves from the environment; a missing
+  file / unset variable strict-fails by name, never leaking a value;
+  updating the referenced file changes what the next render resolves
+  with no registry write. Confirm export / `cluster.hocon` dumps carry
+  only the reference, not the resolved bytes.
 
 ## Declined Alternatives
 
@@ -869,19 +929,29 @@ encryption (LUKS, AWS EBS encryption, GCP persistent disk
 encryption) provides the at-rest property without adding key
 management to EMQX's surface area. Mention as a possible v2.
 
-### Vault / AWS Secrets Manager / external broker integration
+### Direct secret-broker API integration (Vault, AWS Secrets Manager)
 
 Considered: instead of (or in addition to) a built-in registry,
-support fetching secrets from external secret brokers at render
-time. Rejected for v1 on two grounds: it expands the surface area
-significantly (broker plugins, credential management for the broker
-connection, timeout / cache semantics for slow brokers, error
+support fetching secrets directly from an external secret broker's API
+at render time. Rejected for v1 on two grounds: it expands the surface
+area significantly (broker plugins, credential management for the
+broker connection, timeout / cache semantics for slow brokers, error
 handling for "broker reachable but secret missing" vs "broker
 unreachable"), and it shifts the operational model from "EMQX is
-self-contained" to "EMQX has a hard runtime dependency on an
-external secret service." Operators who want Vault-backed secrets
-can run a Vault Agent sidecar that templates a HOCON file containing
-`emqx_secret_registry` CRUD calls and re-applies on rotation.
+self-contained" to "EMQX has a hard runtime dependency on an external
+secret service."
+
+Interoperability with those brokers is instead achieved *indirectly*,
+through value indirection (see "Value indirection"): a Vault Agent /
+Kubernetes secret volume / init container materialises the secret as a
+file or an environment variable, and the registry entry stores the
+`file://` / `env://` reference. EMQX resolves it at use time and never
+holds the plaintext. This covers the common "our secrets already come
+from Vault/K8s" case without EMQX taking on a broker-client
+dependency; rotation is handled by the external tooling refreshing the
+file / variable, with no registry write at all. Direct broker-API
+integration can still be added later for cases indirection does not
+cover (e.g. per-render dynamic secrets).
 
 ### Returning the value via GET
 
