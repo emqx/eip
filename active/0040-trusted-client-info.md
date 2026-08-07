@@ -194,8 +194,28 @@ This includes:
 * Authorization.
 * Session takeover.
 * `namespace_as_mountpoint`.
+* Gateway `mountpoint` templates.
 * Multi-tenancy namespace and quota checks.
 * Limiter adjustment context.
+
+#### Gateway mountpoint templates
+
+The per-gateway `mountpoint` option is a separate consumer from `namespace_as_mountpoint`, and it needs the trusted projection for the same reason.
+
+`emqx_mountpoint:replvar/2` resolves `${clientid}` and `${username}`, so a mountpoint such as `coap/${clientid}/` derives the client's topic prefix from `ClientInfo`. Two properties make this reachable even when authorization already uses the trusted projection:
+
+* Authorization is evaluated on the **unmounted** topic; the mountpoint is applied afterwards. A placeholder-free rule like `{allow, all, subscribe, ["cs/#"]}.` therefore stays evaluable under the trusted projection, passes, and is then mounted under a prefix built from an unverified attribute.
+* In some gateways the mountpoint is rendered **before** authentication runs, so it is derived from the claimed identity by construction.
+
+Both hold for the CoAP gateway in the default connectionless mode, where `fix_mountpoint/2` runs while enriching the request client info and authentication happens after it. The same shape applies to any gateway whose mountpoint template references a client-asserted attribute.
+
+Rendering the mountpoint from the trusted projection is therefore required for gateway isolation to hold; otherwise trusted-attribute authorization protects the rules but not the namespace they are evaluated in.
+
+#### Request-scoped authentication
+
+The trusted mask is described as channel state established once at connect time. Not every entry point has such state: the CoAP gateway in connectionless mode authenticates **per request** and discards the enriched client info afterwards, so the mask must be computed and consumed within the request scope.
+
+An implementation that attaches trusted attributes to channel state at connect time only would leave request-scoped paths on the full `ClientInfo`, which is the default CoAP mode.
 
 ### Related Issues Addressed
 
@@ -267,7 +287,7 @@ The initial consumers of trusted attributes are the following:
 | --- | --- | --- |
 | `authorization.require_trusted_attributes` | Authorization rule and placeholder evaluation | No |
 | `multi_tenancy.require_trusted_attributes` | Namespace resolution, managed-namespace and quota checks | No |
-| `mqtt.require_trusted_attributes` | Session takeover | Yes, as `zones.<name>.mqtt.require_trusted_attributes` |
+| `mqtt.require_trusted_attributes` | Session takeover, gateway `mountpoint` rendering | Yes, as `zones.<name>.mqtt.require_trusted_attributes` |
 
 The defaults depend on `EMQX_SECURITY_PROFILE`.
 
@@ -296,5 +316,5 @@ The implementation must be completely backwards compatible. The compatibility mu
 
 ## Declined Alternatives
 
-* A separate `require_trusted_attributes` switch for each channel-level consumer (session takeover, `namespace_as_mountpoint`, limiter adjustment). All three read the same channel `ClientInfo` right after authentication, so one switch keeps the config surface small without losing a realistic remediation path.
+* A separate `require_trusted_attributes` switch for each channel-level consumer (session takeover, `namespace_as_mountpoint`, gateway `mountpoint`, limiter adjustment). They read the same channel `ClientInfo` established at authentication time, so one switch keeps the config surface small without losing a realistic remediation path. Note that this grouping is about configuration only: request-scoped entry points such as CoAP connectionless mode still have to build the mask per request rather than once per channel.
 * Per-listener placement of `trusted_client_attributes`. Zone-level placement matches `client_attrs_init` and covers gateways and dedicated entry points through listener-to-zone binding, with less configuration.
