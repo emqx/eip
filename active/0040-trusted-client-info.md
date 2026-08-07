@@ -160,7 +160,7 @@ To strip out untrusted fields from `clientinfo` we do the following:
   }
   ```
 
-For explicit anonymous access, we have just `clientinfo => true`.
+For explicit anonymous access, we have just `clientinfo => true` -- a universal mask treating all fields as trusted.
 
 ### Conceptual Examples
 
@@ -250,9 +250,38 @@ And deduce part of the mask from authentication metadata (used vars in the templ
 
 ## Configuration Changes
 
-We will need:
-* Tweaks to explicitly loosen the trust requirements where trusted client info is applied.
-* Tweaks to explicitly mark some attributes as trusted.
+Two groups of tweaks are introduced:
+* Switches that loosen the trust requirements where trusted client info is applied.
+* A list that marks extra client attributes as trusted.
+
+### Per-consumer trust enforcement switches
+
+Hardened-mode `ClientInfo` consumer get a boolean switch named `require_trusted_attributes`.
+When the switch is `true`, the consumer receives the trusted projection of `ClientInfo`.
+When it is `false`, the consumer receives the full `ClientInfo`, which is the current behavior.
+
+The initial consumers of trusted attributes are the following:
+
+| Config path | Consumer | Zone-overridable |
+| --- | --- | --- |
+| `authorization.require_trusted_attributes` | Authorization rule and placeholder evaluation | No |
+| `multi_tenancy.require_trusted_attributes` | Namespace resolution, managed-namespace and quota checks | No |
+| `mqtt.require_trusted_attributes` | Session takeover | Yes, as `zones.<name>.mqtt.require_trusted_attributes` |
+
+The defaults depend on `EMQX_SECURITY_PROFILE`.
+
+| Profile | Default of `require_trusted_attributes` |
+| --- | --- |
+| `legacy` | `false` |
+| `hardened` | `true` |
+
+### Marking extra attributes as trusted
+
+New zone-overridable field:
+
+```hocon
+mqtt.trusted_client_attributes = ["clientid", "client_attrs.tns"]
+```
 
 ## Backwards Compatibility
 
@@ -265,3 +294,6 @@ The implementation must be completely backwards compatible. The compatibility mu
 ## Testing Suggestions
 
 ## Declined Alternatives
+
+* A separate `require_trusted_attributes` switch for each channel-level consumer (session takeover, `namespace_as_mountpoint`, limiter adjustment). All three read the same channel `ClientInfo` right after authentication, so one switch keeps the config surface small without losing a realistic remediation path.
+* Per-listener placement of `trusted_client_attributes`. Zone-level placement matches `client_attrs_init` and covers gateways and dedicated entry points through listener-to-zone binding, with less configuration.
