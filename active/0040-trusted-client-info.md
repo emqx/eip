@@ -194,8 +194,11 @@ This includes:
 * Authorization.
 * Session takeover.
 * `namespace_as_mountpoint`.
+* Gateway `mountpoint` templates.
 * Multi-tenancy namespace and quota checks.
 * Limiter adjustment context.
+
+Like `namespace_as_mountpoint`, a gateway `mountpoint` template resolves placeholders such as `${clientid}` and `${username}` from `ClientInfo`, so it must render from the trusted projection. Otherwise the mountpoint prefix is built from an unverified attribute.
 
 ### Related Issues Addressed
 
@@ -267,7 +270,7 @@ The initial consumers of trusted attributes are the following:
 | --- | --- | --- |
 | `authorization.require_trusted_attributes` | Authorization rule and placeholder evaluation | No |
 | `multi_tenancy.require_trusted_attributes` | Namespace resolution, managed-namespace and quota checks | No |
-| `mqtt.require_trusted_attributes` | Session takeover | Yes, as `zones.<name>.mqtt.require_trusted_attributes` |
+| `mqtt.require_trusted_attributes` | Session takeover, gateway `mountpoint` rendering | Yes, as `zones.<name>.mqtt.require_trusted_attributes` |
 
 The defaults depend on `EMQX_SECURITY_PROFILE`.
 
@@ -296,5 +299,5 @@ The implementation must be completely backwards compatible. The compatibility mu
 
 ## Declined Alternatives
 
-* A separate `require_trusted_attributes` switch for each channel-level consumer (session takeover, `namespace_as_mountpoint`, limiter adjustment). All three read the same channel `ClientInfo` right after authentication, so one switch keeps the config surface small without losing a realistic remediation path.
+* A separate `require_trusted_attributes` switch for each channel-level consumer (session takeover, `namespace_as_mountpoint`, gateway `mountpoint`, limiter adjustment). They read the same channel `ClientInfo` established at authentication time, so one switch keeps the config surface small without losing a realistic remediation path.
 * Per-listener placement of `trusted_client_attributes`. Zone-level placement matches `client_attrs_init` and covers gateways and dedicated entry points through listener-to-zone binding, with less configuration.
