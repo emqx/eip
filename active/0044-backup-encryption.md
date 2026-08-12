@@ -63,11 +63,20 @@ against another; that case is discussed under Declined Alternatives.
 
 The producing cluster stores no key.
 
-* **Create.** The operator supplies the key in the create-backup request or CLI
-  invocation. EMQX uses it to encrypt and then discards it. The key is supplied
-  only as a `file://` reference, never inline. An inline CLI argument is visible
-  through the process table and shell history, and an inline request body is
-  recorded by the audit log. `file://` keeps the key out of both.
+* **Create through the REST API.** The operator supplies the key in an
+  `x-encryption-key` request header. The value is either the plaintext key or a
+  `file://` reference. A header is the idiomatic channel for a per-request secret,
+  the same as `Authorization`, and it avoids a request-body field. Body redaction
+  in the audit log is key-name based, so a body field would either leak or force a
+  common name such as `key` into the global sensitive-key list, which over-redacts
+  elsewhere. The `x-encryption-key` name must be added to the sensitive-header
+  redaction list so the audit log and traces mask it; otherwise it is recorded in
+  cleartext, the same gap tracked for other provider headers. The header is
+  protected in transit only when the API listener uses TLS.
+* **Create through the CLI.** The operator supplies the key as a `file://`
+  reference, or through stdin or a prompt. An inline CLI argument is not accepted,
+  because the process table and shell history expose it.
+* EMQX uses the supplied key to encrypt and then discards it.
 * **Import through the REST API.** The key must be provisioned in advance through
   a `ctl` command on the importing node. The import request does not carry the
   key. If the request carried the key, a caller who can reach the import endpoint
@@ -143,9 +152,12 @@ that bypasses the requirement is recorded as such. The create-backup key is a
   * `emqx ctl data import-key add <key-id> file://<path>`
   * `emqx ctl data import-key list`
   * `emqx ctl data import-key delete <key-id>`
-* Create-backup accepts an optional key parameter, supplied only as a `file://`
-  reference, on both the REST API and the CLI. When absent, the backup is
-  plaintext as today.
+* Create-backup accepts an optional key. The REST API takes it in the
+  `x-encryption-key` header, whose value is the plaintext key or a `file://`
+  reference. The CLI takes a `file://` reference, stdin, or a prompt. When absent,
+  the backup is plaintext as today.
+* `x-encryption-key` is added to the sensitive-header redaction list so the audit
+  log and traces mask it.
 
 The AEAD ciphertext and its cleartext header are new members of the backup
 archive layout. `META.hocon` gains no secret material; the wrapped data key, key
@@ -189,8 +201,10 @@ plaintext one without guessing.
 * Enforce `require_encryption`: plaintext API import is rejected when on and
   accepted when off.
 * Confirm CLI import is exempt and is audited as a bypass.
-* Confirm the create key is accepted only as `file://` and never appears in the
-  audit log or process arguments.
+* Confirm the `x-encryption-key` header is redacted in the audit log and traces,
+  for both a plaintext value and a `file://` value.
+* Confirm the CLI does not accept an inline key argument, and that a `file://` or
+  stdin key never appears in the process arguments.
 * Round-trip a backup between two clusters with a key exchanged through `ctl`.
 * Key rotation: an archive made with an older provisioned key still imports after
   a new key is added, and stops importing after the old key is deleted.
@@ -220,6 +234,12 @@ plaintext one without guessing.
   the check when the archive says it is old" is defeated by an attacker labeling a
   crafted archive as old. The requirement is a node policy, and the archive
   version never relaxes it.
+* **Passing the create key in the request body.** A body field would rely on
+  key-name based redaction in the audit log, so it would either leak or require
+  adding a common name such as `key` to the global sensitive-key list, which
+  over-redacts unrelated configuration. An `x-encryption-key` header uses the
+  separate sensitive-header list, which is the correct tool for a per-request
+  secret.
 * **Plain, non-authenticated encryption.** Encryption without an authentication
   tag gives confidentiality but not tamper detection, so it would still need a
   separate MAC. AEAD provides both and avoids a second primitive.
