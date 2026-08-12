@@ -3,6 +3,8 @@
 ## Changelog
 
 * 2026-08-12: @zmstone Initial draft
+* 2026-08-12: Rename policy to `node.data_import_encryption`; define the
+  `.tar.gz.enc` format and the `emqx ctl data encrypt` command
 
 ## Abstract
 
@@ -110,14 +112,37 @@ extractor to malicious archive members. Decryption is the outer gate; the
 existing edition, version, and namespace handling runs on the authenticated
 plaintext.
 
+### Archive format and file name
+
+Encryption wraps a finished archive. EMQX builds the plaintext `tar.gz` first,
+exactly as today, and then encrypts the whole file. The encrypted output is not a
+`tar` and does not carry members of its own; it is a single opaque blob with a
+small cleartext header.
+
+* Plaintext backup: `<name>.tar.gz`, unchanged.
+* Encrypted backup: `<name>.tar.gz.enc`.
+
+The `.enc` file is `header || AEAD(plaintext tar.gz)`. The header is cleartext and
+starts with a fixed magic marker so a reader, and the importer, can tell an
+encrypted backup from a plaintext one without relying on the extension. After the
+magic marker the header carries the format version, the AEAD cipher identifier,
+the key identifier, the nonce, and the wrapped data key. The importer detects the
+magic marker, reads the header, unwraps the data key with the provisioned key,
+decrypts and authenticates the body to recover the `tar.gz`, and only then runs
+the existing import on the plaintext. The producing side computes the extension
+and the importer's format detection from the header, not from the file name, so a
+renamed file is still handled correctly.
+
 ### Node policy
 
 Whether encryption is required is a property of the importing node, not of the
-archive. A node setting `data_backup.import.require_encryption` controls it, and
-it defaults to on under the hardened security profile. When the setting is on,
-an API import must be an encrypted archive that authenticates under a provisioned
-key; a plaintext or wrongly-keyed archive is rejected. When it is off, plaintext
-import keeps working.
+archive. A node setting `node.data_import_encryption` controls it, with values
+`per_profile | true | false`. It defaults to `per_profile`, which requires
+encryption under the hardened security profile and does not require it under the
+legacy profile. `true` and `false` force the behavior regardless of profile. When
+encryption is required, an API import must be an encrypted archive that
+authenticates under a provisioned key; a plaintext or wrongly-keyed archive is
+rejected. When it is not required, plaintext import keeps working.
 
 The archive's self-reported `version` never relaxes this decision. Reading the
 version to decide whether to verify would let an attacker label a crafted archive
@@ -132,8 +157,8 @@ made before this feature. That path is operator-driven, never archive-driven:
 * Import through the CLI, which is the trusted plane and is exempt.
 * Re-encrypt the plaintext archive out of band with a provisioned key, then
   import the result through the API.
-* Temporarily set `require_encryption` to off for a maintenance window, which is
-  an explicit and audited configuration change.
+* Temporarily set `node.data_import_encryption` to `false` for a maintenance
+  window, which is an explicit and audited configuration change.
 
 ### Auditing
 
@@ -144,14 +169,10 @@ that bypasses the requirement is recorded as such. The create-backup key is a
 
 ## Configuration Changes
 
-* `data_backup.import.require_encryption`: boolean. Default off under the legacy
-  profile, on under the hardened profile. When on, REST API import requires an
-  encrypted archive that authenticates under a provisioned key.
-* Backup-key store on the importer, populated through new `ctl` commands, for
-  example:
-  * `emqx ctl data import-key add <key-id> file://<path>`
-  * `emqx ctl data import-key list`
-  * `emqx ctl data import-key delete <key-id>`
+* `node.data_import_encryption`: enum `per_profile | true | false`. Default
+  `per_profile` (required under the hardened profile, not required under the legacy
+  profile). When encryption is required, REST API import requires an encrypted
+  archive that authenticates under a provisioned key.
 * Create-backup accepts an optional key. The REST API takes it in the
   `x-encryption-key` header, whose value is the plaintext key or a `file://`
   reference. The CLI takes a `file://` reference, stdin, or a prompt. When absent,
@@ -159,21 +180,42 @@ that bypasses the requirement is recorded as such. The create-backup key is a
 * `x-encryption-key` is added to the sensitive-header redaction list so the audit
   log and traces mask it.
 
-The AEAD ciphertext and its cleartext header are new members of the backup
-archive layout. `META.hocon` gains no secret material; the wrapped data key, key
-identifier, cipher, and nonce live in the header.
+New `ctl` commands manage keys and encrypt or decrypt archives out of band:
+
+```
+# Provision the keys the importer trusts.
+emqx ctl data import-key add <key-id> file://<path-to-key>
+emqx ctl data import-key list
+emqx ctl data import-key delete <key-id>
+
+# Encrypt an existing plaintext backup, for example to re-encrypt an old
+# backup before importing it through the API. Produces <name>.tar.gz.enc.
+emqx ctl data encrypt /var/lib/emqx/backup/cluster-2026-08-12.tar.gz \
+  --key-id prod-2026 --key file:///run/secrets/backup-key
+
+# Decrypt on the trusted plane, for inspection.
+emqx ctl data decrypt /path/cluster-2026-08-12.tar.gz.enc \
+  --key file:///run/secrets/backup-key --out /tmp/cluster.tar.gz
+```
+
+The encrypted output is a separate file (`<name>.tar.gz.enc`), not a change to the
+`tar` layout. `META.hocon` inside the plaintext archive gains no secret material;
+the wrapped data key, key identifier, cipher, and nonce live in the encrypted
+file's cleartext header.
 
 ## Backwards Compatibility
 
 The feature is opt-in and off by default under the legacy profile.
 
-* Existing plaintext backups continue to import unchanged while
-  `require_encryption` is off.
+* Existing plaintext backups continue to import unchanged while encryption is not
+  required (`node.data_import_encryption = false`, or `per_profile` under the
+  legacy profile).
 * A create request without a key produces a plaintext backup, as today.
-* Under the hardened profile, `require_encryption` defaults on, which is a
-  behavior change for hardened deployments: plaintext API import is rejected, and
-  operators use the CLI, re-encryption, or an explicit policy relaxation for old
-  backups. This is called out as an intentional hardening default.
+* Under the hardened profile, `node.data_import_encryption = per_profile` requires
+  encryption, which is a behavior change for hardened deployments: plaintext API
+  import is rejected, and operators use the CLI, re-encryption, or an explicit
+  policy relaxation for old backups. This is called out as an intentional
+  hardening default.
 
 No archive-format field is repurposed. The encrypted format is a distinct layout
 identified by its header, so a reader can tell an encrypted archive from a
@@ -198,8 +240,12 @@ plaintext one without guessing.
 * Confirm import decrypts before parsing `META.hocon` and before `tar`
   extraction, including that a malicious member in an unauthenticated archive is
   never written to disk.
-* Enforce `require_encryption`: plaintext API import is rejected when on and
-  accepted when off.
+* Enforce `node.data_import_encryption`: plaintext API import is rejected when
+  encryption is required and accepted when it is not, across the `per_profile`,
+  `true`, and `false` values under both profiles.
+* `emqx ctl data encrypt` on a plaintext backup produces a `<name>.tar.gz.enc`
+  that imports through the API under a provisioned key, and `emqx ctl data decrypt`
+  round-trips it back to the original `tar.gz`.
 * Confirm CLI import is exempt and is audited as a bypass.
 * Confirm the `x-encryption-key` header is redacted in the audit log and traces,
   for both a plaintext value and a `file://` value.
