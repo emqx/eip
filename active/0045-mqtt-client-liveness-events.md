@@ -136,7 +136,7 @@ An online record has the following shape:
   "reason": "periodic_check",
   "clientid": "device-001",
   "username": "device",
-  "connection_id": "019D2A67F9A1000AB231000000000001",
+  "connection_id": "opaque-connection-id-A",
   "sequence": 2,
   "connected_at": 1787191200000,
   "last_seen_at": 1787191230000,
@@ -155,7 +155,7 @@ An explicitly observed terminal connection event has the following shape:
   "reason": "takenover",
   "clientid": "device-001",
   "username": "device",
-  "connection_id": "019D2A67F9A1000AB231000000000001",
+  "connection_id": "opaque-connection-id-A",
   "sequence": 3,
   "connected_at": 1787191200000,
   "last_seen_at": 1787191230000,
@@ -168,7 +168,7 @@ An explicitly observed terminal connection event has the following shape:
 The fields have the following semantics:
 
 * `connection_id` identifies one successful MQTT connection incarnation.  It
-  is an opaque value and must not be sorted or parsed as a timestamp.
+  is an opaque serialized value and must not be parsed or sorted.
 * `sequence` orders liveness records produced by the same connection
   incarnation.
 * `connected_at` is retained for presentation and diagnosis.  It is not a
@@ -223,13 +223,13 @@ hookpoint is `client.liveness`.
 
 ### Connection identity and event ordering
 
-EMQX generates one 128-bit `connection_id` after a connection has successfully
-authenticated and opened or taken over its session.  The identifier is stored
-in binary form with the channel and rendered as 32 hexadecimal characters in
-the event.  `emqx_guid:gen/0` is a candidate implementation.  The public
-contract requires the identifier to be unique among all connection
-incarnations whose events can still be delivered or retained; its encoding is
-not part of the contract.
+EMQX uses the channel process PID as the internal identity for one successful
+MQTT connection incarnation.  The public event serializes that PID as an
+opaque `connection_id` string or binary.  Consumers must not parse it, sort it,
+or depend on the Erlang node name embedded in its representation.  The public
+contract requires the serialized value to remain unique among all connection
+incarnations whose events can still be delivered or retained; the encoding can
+be replaced if the connection implementation changes in the future.
 
 Each connection incarnation owns a non-negative 64-bit `sequence` counter.
 The counter starts at `1` for the initial online record and increases for every
@@ -565,7 +565,15 @@ default is `5s`.  Periodic liveness reporting is disabled when the effective
 MQTT Keep Alive is zero.
 
 `enable` is a boolean.  `min_report_interval` and `margin` use the HOCON
-`duration()` type and must be positive durations.
+`duration()` type.  The first version validates:
+
+```text
+margin >= 1s
+min_report_interval >= 2 * margin
+```
+
+The second constraint is an operational guard to keep the safety margin from
+dominating the reporting interval; it is not an MQTT protocol requirement.
 
 The liveness configuration is captured when a new MQTT connection is created.
 Runtime changes to `enable`, `min_report_interval`, or `margin` apply only to
