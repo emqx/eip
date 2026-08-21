@@ -5,6 +5,10 @@
 * 2026-08-12: @zmstone Initial draft
 * 2026-08-12: Rename policy to `node.data_import_encryption`; define the
   `.tar.gz.enc` format and the `emqx ctl data encrypt` command
+* 2026-08-21: Address review — introduce the explicit **DEK** term; clarify the
+  header carries a plaintext key identifier (not a wrapped/encrypted key) and drop
+  envelope encryption; detail the `.enc` header fields; govern plaintext backup
+  creation by the same policy
 
 ## Abstract
 
@@ -63,7 +67,10 @@ against another; that case is discussed under Declined Alternatives.
 
 ### Key handling
 
-The producing cluster stores no key.
+The operator supplies a symmetric **data encryption key (DEK)** — the key that
+directly encrypts and decrypts the archive with the AEAD cipher. It is the only
+key in the scheme; there is no separate key-encryption key. The producing cluster
+stores no DEK.
 
 * **Create through the REST API.** The operator supplies the key in an
   `x-encryption-key` request header. The value is either the plaintext key or a
@@ -78,7 +85,7 @@ The producing cluster stores no key.
 * **Create through the CLI.** The operator supplies the key as a `file://`
   reference, or through stdin or a prompt. An inline CLI argument is not accepted,
   because the process table and shell history expose it.
-* EMQX uses the supplied key to encrypt and then discards it.
+* EMQX uses the supplied DEK to encrypt and then discards it.
 * **Import through the REST API.** The key must be provisioned in advance through
   a `ctl` command on the importing node. The import request does not carry the
   key. If the request carried the key, a caller who can reach the import endpoint
@@ -92,15 +99,24 @@ Moving a backup between clusters is therefore: pick a key, create the backup on
 the source with that key, provision the key on the importer through `ctl`, then
 import. The key is exchanged once per trust relationship, not once per backup.
 
-### Envelope encryption
+### Key identifier and direct encryption
 
-Each backup is encrypted with a fresh random data key. The data key is wrapped
-with the operator-supplied key and stored, with a key identifier and the AEAD
-nonce, in a small cleartext header prepended to the archive. Import reads the key
-identifier, selects the matching provisioned key, unwraps the data key, and
-decrypts. Envelope encryption lets the operator rotate the provisioned key
-without re-encrypting existing archives and lets the importer reject an archive
-whose key it does not hold before doing any other work.
+The DEK encrypts the finished archive directly with the AEAD cipher. There is no
+separate random data key and no key wrapping (envelope encryption is discussed and
+declined under Declined Alternatives).
+
+The cleartext header prepended to the archive carries a **key identifier**
+(`key-id`): a short, non-secret label chosen at create time. The `key-id` is *not*
+a key and is *not* an encrypted key — it reveals nothing about the DEK and never
+needs to be decrypted. It only tells the importer which provisioned DEK to use. On
+import, EMQX reads the `key-id`, selects the DEK provisioned under that identifier,
+and decrypts; if no DEK is provisioned for that `key-id`, the archive is rejected
+before any other work.
+
+Key rotation needs no re-encryption of existing archives: the operator provisions
+a new DEK under a new `key-id` for future backups, keeps the old DEK provisioned so
+existing archives still decrypt, and deletes the old DEK once those archives are
+retired.
 
 ### Order of operations on import
 
@@ -123,15 +139,30 @@ small cleartext header.
 * Encrypted backup: `<name>.tar.gz.enc`.
 
 The `.enc` file is `header || AEAD(plaintext tar.gz)`. The header is cleartext and
-starts with a fixed magic marker so a reader, and the importer, can tell an
-encrypted backup from a plaintext one without relying on the extension. After the
-magic marker the header carries the format version, the AEAD cipher identifier,
-the key identifier, the nonce, and the wrapped data key. The importer detects the
-magic marker, reads the header, unwraps the data key with the provisioned key,
-decrypts and authenticates the body to recover the `tar.gz`, and only then runs
-the existing import on the plaintext. The producing side computes the extension
-and the importer's format detection from the header, not from the file name, so a
-renamed file is still handled correctly.
+carries these fields, in order:
+
+* **Magic marker** — a fixed byte sequence identifying an EMQX encrypted backup,
+  so a reader and the importer can tell an encrypted backup from a plaintext one
+  without relying on the file extension.
+* **Format version** — one byte, the header/format version, so the layout can
+  evolve.
+* **AEAD cipher identifier** — one byte selecting the cipher (for example
+  AES-256-GCM or XChaCha20-Poly1305), so the importer decrypts with the algorithm
+  the producer used.
+* **Key identifier (`key-id`)** — length-prefixed, the non-secret label that
+  selects the provisioned DEK (see above). No key material.
+* **Nonce** — the AEAD nonce for this archive, sized for the chosen cipher.
+
+The header carries **no key material** — only the `key-id` that names the DEK. The
+whole header is passed to the AEAD as associated data, so any change to the
+version, cipher, `key-id`, or nonce fails authentication along with the body.
+
+The importer detects the magic marker, reads the header, selects the provisioned
+DEK by `key-id`, decrypts and authenticates the body (with the header as
+associated data) to recover the `tar.gz`, and only then runs the existing import
+on the plaintext. The producing side computes the extension and the importer's
+format detection from the header, not from the file name, so a renamed file is
+still handled correctly.
 
 ### Node policy
 
@@ -143,6 +174,14 @@ legacy profile. `true` and `false` force the behavior regardless of profile. Whe
 encryption is required, an API import must be an encrypted archive that
 authenticates under a provisioned key; a plaintext or wrongly-keyed archive is
 rejected. When it is not required, plaintext import keeps working.
+
+The policy governs backup **creation** as well as import: when encryption is
+required, a create request that supplies no key is rejected, so a node that
+requires encryption never writes an unencrypted archive that could leak secrets in
+the first place. Import and create are symmetric — a node that refuses to import
+plaintext also refuses to produce it. (The setting is named for the import gate,
+which is the security-critical direction, but it governs plaintext in both
+directions on the node.)
 
 The archive's self-reported `version` never relaxes this decision. Reading the
 version to decide whether to verify would let an attacker label a crafted archive
@@ -176,7 +215,8 @@ that bypasses the requirement is recorded as such. The create-backup key is a
 * Create-backup accepts an optional key. The REST API takes it in the
   `x-encryption-key` header, whose value is the plaintext key or a `file://`
   reference. The CLI takes a `file://` reference, stdin, or a prompt. When absent,
-  the backup is plaintext as today.
+  the backup is plaintext as today — unless `node.data_import_encryption` requires
+  encryption, in which case a create request without a key is rejected.
 * `x-encryption-key` is added to the sensitive-header redaction list so the audit
   log and traces mask it.
 
@@ -200,8 +240,8 @@ emqx ctl data decrypt /path/cluster-2026-08-12.tar.gz.enc \
 
 The encrypted output is a separate file (`<name>.tar.gz.enc`), not a change to the
 `tar` layout. `META.hocon` inside the plaintext archive gains no secret material;
-the wrapped data key, key identifier, cipher, and nonce live in the encrypted
-file's cleartext header.
+the key identifier, cipher, and nonce live in the encrypted file's cleartext
+header, which stores no key material.
 
 ## Backwards Compatibility
 
@@ -289,6 +329,16 @@ plaintext one without guessing.
 * **Plain, non-authenticated encryption.** Encryption without an authentication
   tag gives confidentiality but not tamper detection, so it would still need a
   separate MAC. AEAD provides both and avoids a second primitive.
+* **Envelope encryption (wrapping a random data key).** An earlier draft generated
+  a fresh random data key per backup and wrapped it with the operator-supplied key,
+  storing the wrapped key in the header. It is not adopted. The operator-supplied
+  key is used directly as the DEK, and the rotation benefit envelope usually
+  provides — changing the provisioned key without re-encrypting existing archives —
+  is already obtained here through the key identifier plus keeping multiple
+  provisioned DEKs. Wrapping would add a key-unwrap step and stored key material in
+  the header for no gain in this same-operator model. It can be revisited if a
+  future need arises to re-key a shared archive under many operator keys without
+  re-encrypting.
 * **A persisted node-level encryption key.** A key configured on the cluster
   removes the per-request key-handling step but reintroduces a cluster-wide secret
   on every node. The ad-hoc, operator-supplied key keeps the producing cluster
