@@ -6,6 +6,10 @@
 * 2026-10-03: @zmstone Narrowed the scope after review. Removed the proposal to
   change defaults. Removed the memory and transport-coverage work, which is now
   emqx/emqx#19280. Moved the other load mitigations to Future Discussion.
+* 2026-10-04: @zmstone Added the replication lag as a second condition on a
+  replicant node. It is best effort, it reads a cached value, and it has a high
+  absolute threshold. Added the move of the lag sampler from `emqx_prometheus`
+  into `apps/emqx`.
 
 ## Abstract
 
@@ -15,9 +19,9 @@ backlog grows. EMQX measures both values today and raises an alarm for one of
 them, but no component uses either value to make a decision.
 
 This EIP adds one new indicator for this condition and two optional actions
-that an operator can enable. The indicator is local to each node and makes no
-call to another node. Both actions are off by default. This EIP does not change
-any existing default.
+that an operator can enable. A node reads the indicator from values that are
+already available locally. No action makes a call to another node. Both actions
+are off by default. This EIP does not change any existing default.
 
 ## Motivation
 
@@ -37,9 +41,10 @@ Three gaps follow from this.
 
 1. No component measures how far the transaction path is behind. The
    `mnesia_tm` mailbox sample exists, but it only drives an alarm.
-2. A replicant node has no local measure of its own replication backlog. The
-   Mria function that reports the distance to the core node makes an `erpc`
-   call to that core node, so a replicant must not poll it.
+2. A replicant node does not use its own replication backlog to make a
+   decision. The Mria function that reports the distance to the core node makes
+   an `erpc` call to that core node. A decision path must not call it. A cached
+   sample of that distance exists today. Only Prometheus reads it.
 3. Both existing mailbox thresholds are fixed numbers. The same number raises
    and clears the alarm, so the alarm flaps at the boundary.
 
@@ -91,8 +96,9 @@ because line numbers change between branches.
 
 ### The indicator
 
-The indicator is named transaction backlog. It is a boolean. Each node computes
-it from local data only. No sample makes a call to another node.
+The indicator is named transaction backlog. It is a boolean. A node sets it
+from a local queue depth. A replicant node has a second condition, which the
+next section describes.
 
 A core node and a replicant node use different sources, because the work is in
 a different place on each.
@@ -112,22 +118,77 @@ function reads local ETS tables that the replica process writes. It makes no
 
 The indicator uses the larger of the two values.
 
-`mria_status:get_shard_lag/1` reports the distance to the core node. It makes an
-`erpc` call to that core node. A detector must not call the node that it
-suspects is overloaded. This EIP does not use `get_shard_lag/1` to set the
-indicator. An operator can enable it as a diagnostic. When enabled, EMQX calls
-it only while the indicator is already set, and at a lower rate than the local
-sample. Its value goes into the log message. It never changes a decision.
-
 `mria_config:role/0` selects the source. This function reads a persistent term
 and makes no call to another node.
 
+### Second condition: replication lag
+
+A replicant node sets the indicator when the local queue depth is above its
+watermark, or when the replication lag is above a threshold.
+
+The two conditions find different faults. The local counters count the
+transactions that reached this node. When the core node agent or the network is
+the bottleneck, the transactions do not reach this node. The local counters
+then stay low while the node falls further behind. Only the lag shows this
+state. This is the case that `replayq_len` and `message_queue_len` cannot
+report.
+
+`mria_status:get_shard_lag/1` reports the lag. The value is the number of
+transactions that the core node intercepted and this node did not yet import.
+On a core node the function returns zero, so this condition applies to a
+replicant node only.
+
+This condition is best effort. Three properties make it safe to read:
+
+* the value comes from a cache, so no action makes an `erpc` call;
+* a failed sample keeps the last value, and a missing value reads as zero;
+* a zero value does not set the indicator.
+
+A broken sampler therefore does not throttle.
+
+**The threshold is an absolute floor.** The lag counts transactions. It does
+not convert to a time budget, because a cheap transaction and an expensive
+transaction count the same. Set the threshold high enough that only a fault
+reaches it. This EIP proposes 100000. That number does not come from an
+existing EMQX value. Validate it against a loaded cluster before this EIP is
+accepted.
+
+The lag condition does not use the debounce count. The sample interval is 10
+seconds, so the value is already smooth. The threshold is high. A second and a
+third sample add delay and no confidence.
+
+**`disconnected` is not a number.** `mria_status:get_shard_lag/1` returns the
+atom `disconnected` when the shard has no upstream node. Every atom sorts above
+every integer in Erlang term order. A comparison such as `Lag > Threshold`
+therefore returns `true` for `disconnected`, and it raises no error. The code
+must match the integer case. A disconnected shard must not set the indicator,
+because Mria handles that state.
+
+### The sampler
+
+The lag sampler exists today. `emqx_prometheus_cache` calls
+`mria_status:get_shard_lag/1` for each shard on a timer and writes the value to
+an ETS table. `prometheus.mria_lag_refresh_interval` sets the interval, and its
+default is 10 seconds.
+
+That sampler is in the wrong application for this EIP. `emqx_prometheus`
+depends on `emqx`, and `apps/emqx` must not depend on `emqx_prometheus`. So
+`emqx_olp` cannot read that cache.
+
+Move the sampler into `apps/emqx`, next to the other sysmon samplers. Make
+`emqx_prometheus_cache` read the value from the new location. The result is one
+sampler and two readers. The Prometheus metric keeps its name, its value, and
+its refresh rate.
+
 ### Watermarks and debounce
 
-Each source has a high watermark and a low watermark. EMQX sets the indicator
-when a sample is above the high watermark. EMQX clears the indicator when a
-sample is below the low watermark. A sample between the two watermarks does not
-change the indicator.
+This section applies to the queue depth sources. The lag threshold is a single
+absolute value. It has no low watermark and no baseline.
+
+Each queue depth source has a high watermark and a low watermark. EMQX sets the
+indicator when a sample is above the high watermark. EMQX clears the indicator
+when a sample is below the low watermark. A sample between the two watermarks
+does not change the indicator.
 
 A fixed threshold cannot be correct for every deployment. A small node and a
 large multi-tenant node do not have the same steady-state mailbox length. The
@@ -232,10 +293,13 @@ sysmon {
     high_watermark_multiplier = 10
     low_watermark_ratio = 0.5
     sustained_samples = 3
-    lag_diagnostic = false         # replicant only, erpc, log only, never decides
+    lag_threshold = 100000         # replicant only, 0 disables this condition
   }
 }
 ```
+
+`lag_threshold` applies to a replicant node only. A core node reports no lag.
+Set it to `0` to use the local queue depth alone.
 
 The indicator is node-scoped because every input is a node property. A node has
 one `mnesia_tm` process and one replica process for a shard, whatever the number
@@ -256,26 +320,40 @@ can reasonably protect one zone and not another.
 * A node computes and applies the indicator locally. A node that runs older code
   does not run the detector and does not apply the new actions. A rolling
   upgrade needs no agreement between nodes and no feature gate.
+* The move of the lag sampler into `apps/emqx` does not change the Prometheus
+  output. The metric keeps its name and its value.
+  `prometheus.mria_lag_refresh_interval` keeps its name and its default, and it
+  continues to set the sample interval.
 
 ## Document Changes
 
 * Document the two new `zone.overload_protection` fields and state that the
   retained message action loses data.
 * Document the new `sysmon.tx_backlog` section.
+* State that `lag_threshold` applies to a replicant node only, and that its
+  unit is a transaction count and not a time.
 * State in the operations guide that `mnesia_tm_mailbox_size_alarm_threshold`
   also sets the floor of the high watermark when the indicator is enabled.
 
 ## Testing Suggestions
 
 * Watermark state machine: the indicator sets only after the configured number
-  of consecutive high samples, does not change inside the band, and clears only
-  after the same number of consecutive low samples.
+  of consecutive high samples. It does not change inside the band. It clears
+  only after the same number of consecutive low samples.
 * Baseline: the baseline does not move while the indicator is set.
 * Replicant source: the indicator sets from `replayq_len` and
-  `message_queue_len` alone. The indicator still works when the call to the core
-  node fails or times out.
-* Default off: on a node that does not set the new fields, no connection is
-  rejected and no retained message write is skipped, under any value of the
+  `message_queue_len` alone, with the lag at zero.
+* Lag condition: the indicator sets from the lag alone, with both local
+  counters at zero. This is the fault that the local counters cannot report.
+* `disconnected`: the indicator does not set when the cached lag is the atom
+  `disconnected`. Assert this with the threshold set to a low value, so that a
+  term order comparison would set the indicator.
+* Stale cache: the indicator does not set when the sampler stopped and the
+  cached value is absent.
+* Sampler move: the Prometheus `emqx_mria_lag` metric reports the same value
+  after the sampler moves to `apps/emqx`.
+* Default off: a node that does not set the new fields rejects no connection
+  and skips no retained message write. This holds for any value of the
   indicator.
 * Core and replicant: a core node uses the `mnesia_tm` source and a replicant
   node uses the Mria source, selected by `mria_config:role/0`.
