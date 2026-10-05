@@ -10,6 +10,9 @@
   replicant node. It is best effort, it reads a cached value, and it has a high
   absolute threshold. Added the move of the lag sampler from `emqx_prometheus`
   into `apps/emqx`.
+* 2026-10-05: @zmstone Renamed the new settings after review. `tx` reads as the
+  transmit side of `rx/tx`, so the names no longer use it. The new action
+  fields use `throttle`.
 
 ## Abstract
 
@@ -276,8 +279,8 @@ zone.default.overload_protection {
   backoff_hibernation = true      # unchanged
   backoff_new_conn = true         # unchanged
 
-  backoff_new_conn_on_tx_backlog = false   # new
-  bypass_retained_on_tx_backlog = false    # new
+  throttle_new_conn_on_backlog = false  # new
+  bypass_retained_on_backlog = false    # new
 }
 ```
 
@@ -287,7 +290,7 @@ A new node-scoped section configures the indicator:
 sysmon {
   mnesia_tm_mailbox_size_alarm_threshold = 500   # unchanged, alarm only
 
-  tx_backlog {
+  backlog {
     enable = false                 # the node does not sample unless this is true
     high_watermark_floor = 500
     high_watermark_multiplier = 10
@@ -329,7 +332,7 @@ can reasonably protect one zone and not another.
 
 * Document the two new `zone.overload_protection` fields and state that the
   retained message action loses data.
-* Document the new `sysmon.tx_backlog` section.
+* Document the new `sysmon.backlog` section.
 * State that `lag_threshold` applies to a replicant node only, and that its
   unit is a transaction count and not a time.
 * State in the operations guide that `mnesia_tm_mailbox_size_alarm_threshold`
