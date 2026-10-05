@@ -12,7 +12,9 @@
   into `apps/emqx`.
 * 2026-10-05: @zmstone Renamed the new settings after review. `tx` reads as the
   transmit side of `rx/tx`, so the names no longer use it. The new action
-  fields use `throttle`.
+  fields use `throttle`. Both are enumerations now. The retained message action
+  gained a `reject` value, which tells the client that the publish failed
+  instead of dropping it in silence.
 
 ## Abstract
 
@@ -77,8 +79,8 @@ The indicator is the transaction backlog of the local node.
 
 The actions are:
 
-* reject new connections;
-* skip retained message writes.
+* throttle new connections;
+* throttle retained message writes.
 
 This EIP does not cover:
 
@@ -222,10 +224,19 @@ purpose:
 An operator who already changed the `mnesia_tm` mailbox alarm threshold keeps
 that value as the floor. The alarm itself does not change.
 
-### Action 1: reject new connections
+### Action 1: throttle new connections
 
 When the indicator is set, EMQX rejects a new connection on a listener whose
-zone enables this action.
+zone enables this action. The setting has two values:
+
+| Value | Behaviour |
+|---|---|
+| `false` | Accept the connection. This is the default. |
+| `reject` | Reject the connection. |
+
+Both actions are enumerations rather than booleans, so that a later EIP can add
+a value without changing the type of a shipped setting. A delay, a queue or a
+rate limit are the obvious candidates for action 1.
 
 EMQX already has this action. `emqx_olp:backoff_new_conn/1` rejects a new
 connection and increases the `overload_protection.new_conn` counter. This EIP
@@ -239,11 +250,16 @@ That back pressure is inside msquic and it is not related to the transaction
 backlog. The two do not conflict. An operator who enables this action on a QUIC
 listener gets both.
 
-### Action 2: skip retained message writes
+### Action 2: throttle retained message writes
 
 When the indicator is set, EMQX does not write a retained message on a zone
-that enables this action. The client receives its normal acknowledgement. A
-later subscriber does not receive the skipped message.
+that enables this action. The setting has three values:
+
+| Value | Behaviour |
+|---|---|
+| `false` | Write the retained message. This is the default. |
+| `skip_store` | Do not write it. Acknowledge the publish as usual. |
+| `reject` | Do not write it. Tell the client that the publish failed. |
 
 This action loses data that a client sent. It is off by default and it must stay
 off by default. An operator enables it only after the operator accepts the
@@ -251,8 +267,49 @@ effect.
 
 EMQX already drops a retained message write in one case: the retainer drops the
 write when the message is above `retainer.max_payload_size` or above the
-configured rate. This action adds a second reason to a path that already drops.
-It does not add a new kind of data loss.
+configured rate. `skip_store` adds a second reason to a path that already drops.
+
+**Why `reject` exists.** The existing drop happens at a limit that the operator
+sets in the configuration, so the operator can predict it. This action happens
+at a node state that the operator can not predict. A client that gets a normal
+acknowledgement for a message that EMQX did not store has no way to learn that
+the message is gone. `reject` tells the client, so the client can retry or
+connect to another node.
+
+**`reject` works for MQTT 5.0 only.** A reason code needs a field to travel in.
+In MQTT 3.1.1 and MQTT 3.1 the PUBACK and PUBREC packets hold a packet
+identifier and nothing else. `emqx_frame:serialize_variable/3` drops the reason
+code for those versions. So:
+
+| Client | QoS 0 | QoS 1 | QoS 2 |
+|---|---|---|---|
+| MQTT 5.0 | drop, no acknowledgement exists | PUBACK `0x97` | PUBREC `0x97` |
+| MQTT 3.1.1 and 3.1 | drop | behaves as `skip_store` | behaves as `skip_store` |
+
+`0x97` is `Quota exceeded`. It is already defined as `?RC_QUOTA_EXCEEDED`.
+
+A node must not disconnect an older client in place of the reason code. A
+disconnect costs more work than the retained write that the node declined to
+do, which defeats the action.
+
+**`reject` must also stop the delivery.** A PUBLISH with the retain flag is two
+operations: deliver the message to the current subscribers, and store it for
+later subscribers. The reason code applies to the publish as a whole, so a
+`0x97` on a message that EMQX did deliver tells the client something untrue.
+
+When the setting is `reject`, EMQX must therefore drop the whole publish, not
+only the store. The order of operations allows this. The retainer runs on the
+`message.publish` hook before the broker dispatches. That hook can already stop
+a dispatch with the `allow_publish` header.
+
+This is the cost of `reject`: it throws away a live delivery to save a write.
+`skip_store` keeps the delivery and loses only the store. The two values trade
+honesty against reach, and an operator picks one.
+
+**One implementation note.** QoS 1 needs no change in `emqx_channel`. The
+`message.puback` hook already lets a handler set the reason code. QoS 2 has no
+equivalent hook: `pubrec_reason_code/1` returns a fixed value. That function
+needs a hook or a parameter.
 
 ### How an action reads the indicator
 
@@ -269,7 +326,7 @@ its value, or its callers.
 No existing default value changes.
 
 Two new fields go in `zone.overload_protection`, next to the existing action
-fields. Both are off by default:
+fields. Both are enumerations and both default to `false`:
 
 ```hocon
 zone.default.overload_protection {
@@ -279,8 +336,8 @@ zone.default.overload_protection {
   backoff_hibernation = true      # unchanged
   backoff_new_conn = true         # unchanged
 
-  throttle_new_conn_on_backlog = false  # new
-  bypass_retained_on_backlog = false    # new
+  throttle_new_conn_on_backlog = false  # new: false | reject
+  throttle_retained_on_backlog = false  # new: false | reject | skip_store
 }
 ```
 
@@ -332,6 +389,9 @@ can reasonably protect one zone and not another.
 
 * Document the two new `zone.overload_protection` fields and state that the
   retained message action loses data.
+* State that `reject` needs MQTT 5.0, that an older client gets the
+  `skip_store` behaviour, and that `reject` also drops the delivery to the
+  current subscribers.
 * Document the new `sysmon.backlog` section.
 * State that `lag_threshold` applies to a replicant node only, and that its
   unit is a transaction count and not a time.
@@ -358,6 +418,14 @@ can reasonably protect one zone and not another.
 * Default off: a node that does not set the new fields rejects no connection
   and skips no retained message write. This holds for any value of the
   indicator.
+* `skip_store`: the retained message is not stored, the current subscribers
+  still receive it, and the client gets a success acknowledgement.
+* `reject` on MQTT 5.0: a QoS 1 publish gets PUBACK `0x97` and a QoS 2 publish
+  gets PUBREC `0x97`. The message is not stored and the current subscribers do
+  not receive it.
+* `reject` on MQTT 3.1.1: the client gets a plain PUBACK, the message is not
+  stored, and the connection stays open.
+* `reject` on QoS 0: the message is dropped and the connection stays open.
 * Core and replicant: a core node uses the `mnesia_tm` source and a replicant
   node uses the Mria source, selected by `mria_config:role/0`.
 * `emqx_olp:is_overloaded/0` keeps its current value when the indicator is set
