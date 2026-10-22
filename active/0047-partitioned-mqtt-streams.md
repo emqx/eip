@@ -3,607 +3,569 @@
 ## Changelog
 
 * 2026-10-07: Initial draft.
+* 2026-10-22: Specify the publisher and subscriber MQTT packets; defer consumer groups to a separate proposal.
 
 ## Abstract
 
-Add logical partitions, stable offsets, bounded batch reads, and optional durable consumer-group checkpoints to MQTT Streams.
+Add logical partitions and stable replay offsets to MQTT Streams. This proposal defines the MQTT API for publishing and consuming records:
 
-- Existing publishers keep using ordinary MQTT PUBLISH.
-- Producers that need explicit placement or a durable per-stream receipt use a single-record append operation.
-- Append and all consumer operations use a small command protocol: MQTT 5 request/response over reserved topics, used directly or through client SDKs.
-- The existing `$stream/<name>` subscription keeps working, including on partitioned streams.
-- The contract is independent of storage. Durable Storage (DS) in its existing layout, a stream-specific DS layout, and a dedicated backend are implementation candidates.
+| Client action | MQTT packets |
+| --- | --- |
+| Publish ordinary application traffic | `PUBLISH` to an application topic; matching streams select a partition. At QoS 1, `PUBACK` acknowledges the MQTT publication and carries no stream durability confirmation. |
+| Append directly to one stream, optionally selecting a partition | QoS 1 `PUBLISH` to the stream's append topic; `PUBACK` reports durable success or rejection. |
+| Consume all partitions | `SUBSCRIBE` to the stream's partition wildcard with one `earliest` or `latest` selector; receive records as `PUBLISH` packets. |
+| Consume selected partitions | `SUBSCRIBE` with one Topic Filter and starting offset per partition; receive records as `PUBLISH` packets. |
+| Stop consuming | `UNSUBSCRIBE`, followed by `UNSUBACK`. |
+| Discover a stream's identity, partitions, and bounds | MQTT 5 request/response using `PUBLISH` packets. |
+
+Subscriptions continue with new records after replay reaches the end. Applications choose all or selected partitions and persist their own processing positions.
+
+The next proposal will define the consumer-group protocol, including membership, coordination, partition assignment, rebalancing, fencing, and durable group progress.
 
 ## Motivation
 
-MQTT Streams store matching publications in DS and replay them through `$stream/<name>` subscriptions with a `stream-offset` user property; each delivered message carries `ts` and `key` user properties. The [existing Streams tests](https://github.com/emqx/emqx/blob/release-63/apps/emqx_streams/test/emqx_streams_test_utils.erl) exercise that subscription shape. The current implementation has four shortcomings.
+The current `$stream/<name>` API replays a stream using timestamp selectors. Applications need explicit units of parallel consumption and exact positions from which to resume. Broker and client-library implementers need a packet contract that does not depend on an SDK or EMQX storage internals.
 
-1. **One shard per stream.** Every record of a stream is written to a single DS shard selected from the stream ID (`emqx_streams_message_db:insert/4`). A stream cannot be written faster than one shard accepts, and consumers have no public unit of parallelism or ordering.
-2. **Positions are times, not identities.**
-    * `earliest` is the current time minus the stream's retention period, not the physical boundary; unlimited regular streams are expired by a global period.
-    * `latest` is the current time.
-    * An explicit position is a timestamp; one earlier than the retention window (now minus the retention period) is moved forward to the window's start (`emqx_streams_extsub_handler:start_time_us/2`).
-    * Two readers cannot agree on a position, a position cannot be checked against retained history, and resuming where a consumer stopped depends on clocks.
-3. **No durable processing progress.** The broker records nothing about what a consumer has processed. Applications persist delivered timestamps themselves and accept imprecision at the boundary.
-4. **Limits are enforced late.**
-    * Count and byte limits are not checked when a record is written.
-    * Usage is tracked in a separate quota index updated in batches, on purpose, to keep writes fast; its settings are hidden (`emqx_streams_schema`).
-    * Expiration driven by those limits runs behind the writes, and a write that would exceed a limit cannot be rejected.
-
-Applications can track processing progress themselves, imprecisely, but have no way to get partition assignment or exact replay positions.
-
-Design goals:
-
-1. **Compatibility with existing publishers.** Store ordinary MQTT traffic without a Streams SDK or producer changes.
-2. **A small consumer API.** Batches and a processing helper for common use; explicit partitions, fetch, seek, and checkpoints when needed.
-3. **Testable guarantees.** Distinguish durable append, completed delivery, and saved application progress; bound memory and retained history.
-4. **Storage independence.** Expose logical logs and positions without backend cursors, physical shards, or mandatory reuse of existing consumer machinery.
+This proposal provides static partition IDs, stable record identities, and explicit replay requests. Ordinary MQTT publishers continue to work without changes.
 
 ## Design
 
-The following contract defines required behavior. Examples, the walkthrough, and implementation choices are informative. Rules that matter to implementers more than to API users are in Appendix A. Exact wire schemas and interoperability fixtures must be finalized before command protocol v1 is declared stable.
+### Scope and MQTT conventions
 
-### Scope
+This API applies to regular, append-only streams created in the partitioned format and uses [MQTT 5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html). Uppercase MUST, MUST NOT, and SHOULD indicate protocol requirements.
 
-This EIP applies to regular (append-only) streams created in the partitioned format.
+Out of scope: consumer groups; last-value streams and compaction; producer batching and deduplication; filtering within a partition; repartitioning; exactly-once processing; and live backend switching.
 
-Out of scope, to be specified separately:
+Packet examples below show decoded MQTT fields. Every field shown under `User Properties` is an MQTT UTF-8 string pair. Binary record payloads remain raw bytes. Examples use stream `telemetry` with three partitions and publisher Client ID `car-17`.
 
-- Last-value streams and compaction; they keep their current key-in-topic storage layout.
-- Automatic consumer assignment.
-- Producer batching, deduplication, filtering, limits shared across a whole stream, and repartitioning.
-- Broker-side dead-lettering and per-record negative acknowledgment.
-- Exactly-once delivery.
-- Live backend switching.
-
-Stream names stay unique across the cluster, as today. If the stream registry gains namespaces, names are scoped by namespace and nothing else in this contract changes.
-
-### Walkthrough
-
-One stream end to end: `telemetry`, topic filter `devices/#`, three partitions, default key expression `message.from` (the publisher's Client ID). Terms are defined in the sections that follow.
-
-Writes:
-
-- Publishers are unchanged MQTT clients.
-- For every stream whose topic filter matches, the broker evaluates the key expression and hashes the key to a partition, then appends the record to that partition's log.
-- A direct append may name the partition; the key is still evaluated and stored.
-
-```text
-Publishers (ordinary MQTT, unchanged)         Stream "telemetry": topic filter devices/#,
-                                              key expression message.from, 3 partitions
-
-Client "car-17"   PUBLISH devices/17/temp  --+
-Client "car-17"   PUBLISH devices/17/speed --+-- key "car-17"  -- hash --> P1
-
-Client "phone-3"  PUBLISH devices/3/temp   ----- key "phone-3" -- hash --> P0
-
-Producer app      append(partition = 2)    ----- explicit placement -----> P2
-
-Partition logs: each is one ordered log; offsets are strictly monotonic within a partition,
-may have gaps, and are never reused
-
-P0  | 100 | 103 | 107 | 112 |        start_offset 100   end_offset 113
-P1  |  41 |  42 |  58 |              start_offset  41   end_offset  59
-P2  |   7 |   9 |                    start_offset   7   end_offset  10
-
-Records placed by key: same key, same partition, so order per key is kept.
-There is no order across partitions.
-```
-
-Each stored record carries what a consumer needs to identify and replay it:
-
-```text
-{stream_id: "s-9f3c", partition: 1, offset: 58, timestamp: 1791415200123456,
- key: "car-17", topic: "devices/17/speed", payload: <bytes>}
-```
-
-Placement:
-
-- Partitions are logical. The backend maps each one to physical storage with a mapping fixed at creation.
-- Several partitions may share a DS shard; a partition never spans shards.
-- Nothing physical appears in the API.
-
-```text
-P0 --+
-P2 --+--> DS shard "a"
-P1 -----> DS shard "b"      backend detail; consumers only ever see partition and offset
-```
-
-Nodes (DS Raft backend as the example):
-
-- Each shard is a Raft group replicated on several nodes with one leader, the write authority.
-- Shards are spread over the cluster: for a given shard a node holds the leader, a follower, or nothing.
-- The control store for claims and checkpoints is replicated the same way.
-- A dedicated backend would replicate partition segments instead of shards; the picture has the same shape.
-
-```text
-Four nodes, replication factor 3. Shard a holds P0 and P2, shard b holds P1.
-L = leader (write authority), F = follower, - = no copy on this node.
-
-            node 1        node 2        node 3        node 4
-shard a     L             F             F             -
-shard b     -             F             L             F
-control     F             L             F             -
-
-Publisher connected to node 1 publishes devices/17/speed (key "car-17" -> P1 -> shard b)
-  node 1 -> shard b leader on node 3 -> append -> replicated to node 2 and node 4
-  durable, and visible below end_offset, once a majority of the replica set has it
-
-Consumer connected to node 4 reads P1 and saves progress
-  fetch  -> node 4 -> shard b leader on node 3 reads and returns the records
-  commit -> node 4 checks the end against shard b, then the control leader on node 2
-            checks the claim, saves, answers
-  (DS serves reads from the leader today; reading from followers is a possible later change)
-
-Node 3 fails
-  shard b elects a new leader on node 2 or node 4; offsets, bounds, and checkpoints do not change
-  an append that was in flight has an unknown outcome; the producer must not blindly retry
-  readers connected to node 3 are gone and their claims expire; those consumers reconnect
-  elsewhere and reopen from their checkpoints
-```
-
-Reads: one group reader on partitions 0 and 1.
-
-```text
-1. open("telemetry", group="analytics", assignment=[0, 1], start="earliest")
-   -> claims P0 and P1 for this reader instance
-   -> positions {P0: 100, P1: 41}: saved checkpoints, else the group's stored
-      initial positions, else start
-2. fetch(max_messages=4, wait_ms=5000)
-   -> records P0:100, P0:103, P0:107, P1:41;  next_offsets {P0: 112, P1: 42}
-   -> active positions move to next_offsets; nothing is saved yet
-3. save_batch(records)                                       application code
-4. commit({P0: 112, P1: 42})
-   -> broker checks positions <= end_offset, then the claim, then no regression
-   -> saves the whole map atomically, then answers
-5. fetch(...) continues from the active positions; repeat 3 and 4
-```
-
-Partition 0 after step 4 and one more fetch that returned offset 112. In this flow every position only moves forward; `seek` and `reset` can move the active and committed positions either way.
-
-```text
-offset:   100       103       107       112       113
-           ^                             ^         ^
-      start_offset                   committed    active = end_offset
-      oldest retained; moves         saved by     continuation after the
-      as history expires             the group    last complete fetch
-```
-
-Failure cases:
-
-```text
-Crash after step 2 or 3        reopen -> positions {P0: 100, P1: 41} -> same records
-                               again (at least once)
-Second instance opens the
-same group and partitions      PARTITION_BUSY until the first reader closes or its
-                               claim expires
-History expires past the
-committed position             open fails with POSITION_EXPIRED, or moves to the new
-                               start_offset with on_expired=earliest
-```
-
-- An independent reader omits `group`: no claims and no broker checkpoints; it keeps its own `SavedPositions`.
-- A legacy `$stream/telemetry` subscriber sees the same records from all partitions merged into one flow, with `partition` and `offset` user properties.
-
-### Streams and partitions
-
-- A stream has a name, unique among the streams that exist in the cluster, and an immutable `stream_id`.
-- Deleting a stream and creating another with the same name produces a different `stream_id`. `StreamRef` values and saved positions refer to the old ID and never apply to the new stream silently.
-- A stream has `partition_count` partitions, numbered `0` to `partition_count - 1`, fixed at creation. Each partition is an independent ordered log.
-- Partitions are logical. The mapping to physical storage is a backend detail that never appears in the API.
-- A key rule maps a record to a partition. It consists of the key expression, the encoding of the expression's result, and the hash that turns the encoded key into a partition number. Each rule carries a version. New EMQX releases may add rule versions, but a stream keeps the version it was created with, so the same message maps to the same partition for the life of the stream.
-- Records placed by key land in the partition their key hashes to, in append order. An explicit partition can put a record with any key in any partition. There is no order across partitions.
-
-### Data model and positions
-
-```text
-StreamRef     = {name, stream_id}
-OffsetMap     = map<partition, nonnegative integer>
-SavedPositions = {stream_id, offsets: OffsetMap}
-
-Record = {
-    stream_id, partition, offset,
-    timestamp,             # Stored broker acceptance time, epoch microseconds.
-    key: bytes, topic: UTF-8 string, payload: bytes,
-    message_id: bytes      # Optional, producer-supplied; stored and replayed
-                           # verbatim, not interpreted in v1. Ordinary publishes leave it unset.
-}
-ReadBatch = {stream_id, records: list<Record>, next_offsets: OffsetMap}
-```
-
-- `(stream_id, partition, offset)` identifies a record permanently; replay preserves all its fields.
-- Offsets are stable record identities. They are not dense counters, and they carry no time meaning for clients even when a backend allocates them from a clock. Within a partition they are strictly monotonic: each append receives an offset greater than every earlier offset in that partition. They may contain gaps and never reset, wrap, or get reused.
-- The wire encodes offsets as decimal strings; comparisons are numeric.
-- `SavedPositions` carries the `stream_id` so that saved progress can never be applied to a different stream with the same name.
-- `message_id` is reserved so a later deduplication capability needs no new record format.
-
-Each partition exposes two bounds. Both are durable and never decrease.
-
-| Bound | Meaning |
+| Convention | Rule |
 | --- | --- |
-| `start_offset` | Minimum valid read position; moves forward as history expires. |
-| `end_offset` | Exclusive upper bound. Every record below it is durable and visible, and no new record can appear below it. |
+| Topic namespace | `$streams/v1/`; separate from the existing `$stream/` namespace. |
+| `<name>` | Stream name encoded as one topic level: UTF-8 bytes outside ASCII letters, digits, `-`, `.`, `_`, `~` are percent-encoded using uppercase hex. Decode exactly once; reject noncanonical encodings and invalid UTF-8. |
+| `<partition>` | Non-negative integer from `0` to `partition_count - 1`, written using ASCII digits `0`–`9`, with no sign or leading zeros except for `0` itself. |
+| Stream identity | Opaque `stream-id`, required on append and on subscriptions with numeric start offsets. Optional when all starts are `earliest` or `latest`. Deleting and recreating a name produces a new ID. |
+| Offsets | Unsigned 64-bit integers encoded as base-10 strings using only ASCII digits `0`–`9`, with no sign or leading zeros except for `0` itself, including in JSON. Compare numerically. Reserve the maximum value for positions; records must leave room for an exclusive end. |
+| Protocol properties | Each property defined for a request occurs at most once. Reject missing required properties, duplicate properties, and unrecognized `stream-*` or `partition-*` request properties. |
+| Connection | Direct-append and stream-subscription clients MUST enable Request Problem Information (`1`, the MQTT default), so acknowledgment properties can be returned. |
+| Acknowledgment size | Before accepting an append or subscription, check that its required acknowledgment fits the client's receive limit. |
+| Reserved traffic | Protocol requests, replies, and deliveries MUST NOT be captured by streams or retained. Record deliveries are addressed only to the requesting subscription. The broker MUST reject client publications to partition delivery topics with `NOT_AUTHORIZED`. |
 
-### Producers and durability
+Maximum Packet Size limits the complete MQTT packet, including headers and properties. The client advertises its receive limit in `CONNECT`; the server advertises its configured receive limit in `CONNACK`. Each applies to packets sent to that peer. If the property is absent, MQTT's protocol size limit applies. The stream's `max_record_bytes` setting is a separate storage limit.
 
-Ordinary publish:
+The broker MUST support Subscription Identifiers for this API. Non-stream subscriptions and publications retain their normal MQTT behavior.
 
-- A PUBLISH whose topic matches a stream's topic filter is written to that stream as a record. The broker evaluates the key expression and picks the partition; the publisher needs no knowledge of streams, keys, or partitions.
-- One PUBLISH can match several streams. PUBACK acknowledges the publish, not the write into any stream. If the write into one stream fails, the publisher is not told; the failure is visible only in that stream's metrics, and the message is still delivered live and still written to the other streams it matched. A producer that needs a per-stream receipt uses direct append.
+### Streams, partitions, and positions
 
-Direct append:
+| Term | Contract |
+| --- | --- |
+| Stream | A unique name, immutable `stream_id`, and fixed `partition_count`. |
+| Partition | One ordered log, identified by a static integer. The broker MUST NOT change the set of partitions selected by a subscription. |
+| Record identity | `(stream_id, partition, offset)`. Replay preserves the record's topic, payload, key, timestamp, and optional message ID. |
+| Record offset | Strictly increases in append order within a partition. Gaps are allowed; offsets are never reused or wrapped. There is no order across partitions. |
+| `start_offset` | Minimum valid read position; advances when retention removes history. |
+| `end_offset` | Exclusive durable end. No new record can later appear below this position. |
+| Read position | Inclusive: deliver the first retained record whose offset is greater than or equal to the requested position. A position in a gap is valid. |
+| `next_offset` | Safe resume position after a delivered record. Greater than that record's offset and at or below the durable end. No stored or future record may lie between the record's offset and this position. Clients use the supplied value. |
 
-- Targets one `StreamRef`. Carries one raw payload, the record's topic, an optional `message_id`, and optionally a partition. Without a partition the key selects it; an explicit partition overrides placement, not the key.
-- Validated before storage: stream identity, append permission and publish permission on the record's topic, topic-filter match, partition, key evaluation, and size.
-- A direct append is not delivered to live subscribers of the topic and is not written to other streams whose topic filter matches. The append's outcome depends only on the target stream: not on live delivery and not on another stream's limits. A producer that wants live delivery publishes normally instead of appending; doing both stores the record twice.
-- The broker answers each append with a correlated result message; the PUBACK of the append request is only transport acknowledgment. A success result means the record is durably stored under the durability profile below, and carries the stream ID and partition, optionally the assigned offset. A rejection result carries the reason.
-- No result within the append timeout is an unknown outcome. Retrying can duplicate records; SDKs must not resubmit automatically.
+Both bounds are durable and never decrease. An empty partition has equal bounds. Valid numeric read positions satisfy `start_offset <= position <= end_offset`; a subscription at `end_offset` waits for new records.
 
-Key expression:
+Partitions are logical. Physical shards, replica locations, backend cursors, and storage generations do not appear in the API.
 
-- Both paths evaluate the stream's key expression over three inputs: `message.topic`, the record's topic (the PUBLISH topic for an ordinary publish, the carried topic for a direct append); `message.payload`, the raw payload bytes; and `message.from`, the Client ID of the publishing client as authenticated by the broker. Protocol properties and other MQTT fields are excluded. The default expression is `message.from`, so by default all records from one client go to one partition.
-- This is narrower than the current `key_expression`, which may reference any field of the message map, including user properties and peer address. The restriction makes a direct append produce the same key as the same message published normally. Existing-format streams keep their expressions.
-- Expression semantics, result encoding, and hashing are frozen by the key rule version. Unsupported expressions are rejected at creation. An evaluation failure rejects the append, including explicit placement, with no fallback.
-- Applications that need custom routing supply a partition.
+### Topic and packet reference
 
-Durability profile:
-
-- Acknowledged appends and checkpoints survive a restart with intact storage and the loss of one storage replica.
-- When a partition's write authority cannot be reached, the write returns an availability error.
-- All backend candidates are evaluated under this profile.
-
-### Consumers
-
-Operations that are part of the contract. `append` is specified in Producers and durability, and `describe` in Configuration Changes.
-
-```text
-describe(name) -> definition, capabilities, limits, bounds, effective policy and pending revision
-append(StreamRef, topic, payload, partition = auto, message_id = none) -> append outcome
-open(StreamRef, assignment, start, group = none, on_expired = fail) -> reader, positions, liveness
-fetch(reader, {max_messages, max_bytes, wait_ms}, partitions = assigned) -> ReadBatch
-commit(reader, offsets) -> checkpoint outcome
-committed(reader) -> saved checkpoints, revision
-committed(StreamRef, group) -> checkpoints, initial positions, revision
-seek(reader, offsets) -> new active positions and reader generation
-renew(reader) -> liveness
-close(reader) -> result
-reset(StreamRef, group, expected_revision, offsets) -> reset outcome
-```
-
-Parameters and results:
-
-- Every remote operation has a correlated application-level result. MQTT acknowledgment alone never completes it.
-- `assignment` is all partitions or an explicit nonempty set. Automatic assignment is a later advertised capability. Fetch selects a nonempty subset of the assignment; without a subset, fetch reads every assigned partition.
-- `start` is `earliest` (each partition's `start_offset`), `latest` (its `end_offset`), or identity-bearing `SavedPositions`. Group recovery uses checkpoints first, then the group's stored initial positions; `start` initializes only partitions that have neither.
-- `on_expired` governs a partition whose recovered or requested position is below `start_offset`.
-- `on_expired = fail` (default) returns `POSITION_EXPIRED` with the expired positions and current bounds, and acquires nothing.
-- `on_expired = earliest` moves those positions to `start_offset` and reports the skipped ranges in the open result. For a group, the move is stored durably under a new group-state revision. For an independent reader, only the open result changes; the broker stores nothing.
-- A privileged `reset` remains the operator path.
-- `liveness` is the claim expiry time and the renewal interval the broker grants; `open` and `renew` return it.
-- Name-based SDK calls resolve and pin `stream_id`. Applications persist that identity to detect replacement across their own restarts.
-- Fetch obeys message, byte, and wait budgets. The byte budget counts payload and record metadata as delivered; it is a transport budget, distinct from how retained bytes are counted in Retention and limits. A record that cannot fit an empty batch returns `RECORD_TOO_LARGE` without advancing that partition. A failed fetch is not a successful empty one.
-- Append, checkpoint, and reset outcomes distinguish success, definite rejection, and unknown outcome.
-- `seek` changes active positions only and invalidates outstanding fetches. The SDK serializes it with commits and reports commits whose outcome is still unknown when the seek runs.
-- `pause`, `resume`, and `position` are SDK-local: `pause` and `resume` select partitions for later fetches, and `position` returns the active positions.
-
-Positions and reads:
-
-- Valid read positions: `start_offset <= position <= end_offset`. The end is a valid position that waits for new records or returns an empty batch.
-- A read starts at the first retained offset at or above the requested position. Positions in gaps are valid.
-- A read at a position below `start_offset` or above `end_offset` returns `OFFSET_OUT_OF_RANGE` with the current bounds, even if the position was valid when the client chose it. The broker never silently moves a read forward past expired records.
-
-Batches:
-
-- A batch belongs to one stream. Records are ordered within each partition, and `next_offsets` holds broker-supplied continuation positions.
-- An empty batch may advance across gaps below `end_offset`.
-- Clients use `next_offsets`, not offset arithmetic. Omitted partitions keep their positions.
-- A batch is a delivery unit, not a cross-partition snapshot.
-- Only a complete fetch advances the reader's active position. That position is separate from processed or saved progress.
-
-#### Reader lifetime and serving node
-
-- A reader belongs to the MQTT connection that opened it and to the node serving that connection. The channel holds the reader's state: the ownership versions of its claims, its active positions, the outstanding fetch, and the retry cache. The claims themselves live in the control store. This mirrors where the state of the current external-subscription (ExtSub) handler lives.
-- A reader does not survive its connection. Session expiry, `clean_start`, and session takeover never carry readers across connections or nodes.
-- After a reconnect, a request naming an old handle returns `UNKNOWN_READER`. Recovery is a reopen from saved progress.
-- The broker releases a reader's claims when its channel terminates. After a node failure they expire by timeout; a reopen in that window returns `PARTITION_BUSY`, and the SDK helper retries open until the advertised expiry.
-- Fetches are served by the connection's node, which reads the log store. Whether a read uses a local replica or the write authority is a backend decision. Bounds and `next_offsets` returned to a client are at or below the authoritative end, and commit validation refreshes against the authority before rejecting a higher position.
-
-#### Claims
-
-- A **claim** is a broker-managed, renewable ownership grant to one reader instance for `(stream_id, group, partition)`. At most one claim is live per tuple.
-- Each claim carries an **ownership version**, a fencing token that increases on every claim takeover. Requests that carry an old version are rejected.
-- A claim protects group checkpoints against two live instances of the same consumer. It does not make external side effects exclusive; replay is at least once.
-- Assignment selects partitions; a claim authorizes their checkpoint updates; a checkpoint persists progress after the claim ends.
-- Independent readers need no claims. Different groups read the same partition concurrently.
-- Group `open` acquires all requested claims atomically or returns `PARTITION_BUSY` and acquires none. It durably resolves new initial positions before delivery, so recovery never re-evaluates `latest`.
-- The reader handle binds its claims and ownership versions. There is no separate claim operation.
-- `renew` extends live claims, `close` releases them, and a missed renewal expires them. MQTT keepalive, pause, and seek neither renew nor release.
-- A claim takeover uses a new ownership version; old requests cannot revive an expired claim. The control authority checks expiry when it applies an update.
-- Known claim loss stops new fetch and checkpoint work for that partition. Running application work may continue.
-- Groups do not pin expired data. An expired recovery position is handled by `on_expired` at open or by `reset`.
-
-#### Committing offsets
-
-A checkpoint is the group's saved position for one partition. Committing is explicit: nothing is saved by fetching, acknowledging, or closing.
-
-Saving progress:
-
-- Saving progress is optional; continuing to fetch never requires it.
-- A group reader calls `commit` after processing.
-- An independent reader omits `group`, keeps its own `SavedPositions` (the full map from `open`, merged with each batch's `next_offsets`), and gets `NO_GROUP` from broker checkpoint operations.
-- The SDK helper wraps fetch, process, commit. For a group it commits only after the handler succeeds, never commits a failed batch, and reopens from saved progress after a failure. The common case:
-
-```text
-reader = open("telemetry", group="analytics", assignment="all", start="earliest")
-consume_batch(reader, handler)        # Fetch, process, checkpoint, repeat.
-```
-
-Meaning:
-
-- A committed position is the offset to resume from, not the last record processed. It states that every record in that partition below it has been processed. One value per partition carries all progress; there are no per-record acknowledgments.
-- The natural value is the batch's `next_offsets`.
-- The broker does not check that the reader fetched up to the position. Any value between the saved position and the partition's end is accepted; this is how an application skips a record it cannot process.
-
-Request:
-
-- `commit(reader, offsets)` carries an `OffsetMap` with one entry per partition to save. Omitted partitions keep their saved positions.
-- A commit may be issued while a fetch is outstanding.
-
-Validation, in order. Every entry is checked before anything is written; the whole map is saved or nothing changes:
-
-1. The reader is a group reader; independent readers get `NO_GROUP`.
-2. Every position is at or below the partition's authoritative end, or the result is `OFFSET_OUT_OF_RANGE` with current bounds. The end never decreases, so cached bounds may be used, but the broker refreshes them before rejecting a position higher than its cache. A position below `start_offset` is accepted, because processed records may have expired since they were read.
-3. The reader holds a live claim with the current ownership version on every partition in the map, as checked by the control authority when it applies the update; otherwise `NOT_OWNER`. A commit that arrives after expiry or claim takeover is rejected even if its positions are valid.
-4. No position is below the saved one, or the result is `CHECKPOINT_REGRESSION`. Equal positions are accepted, so a retry of a successful commit succeeds while the claim is live.
-
-Durability and outcome:
-
-- The control store persists the map and a new group-state revision atomically. The broker answers success only after that write is durable under the durability profile.
-- Outcomes: success; definite rejection with one of the codes above; unknown, when the response is lost or the request times out after submission.
-- After an unknown outcome the SDK queries `committed(reader)` and compares the saved positions and revision. It never infers success from PUBACK and never resets positions on its own.
-
-Ordering:
-
-- The SDK sends a reader's commits in order and serializes them with `seek`; a later commit from the same reader is never applied before an earlier one.
-- Commit never changes the reader's active position. After a seek, the next commit carries whatever the application chooses.
-
-Recovery:
-
-- On the next group `open`, each partition with a checkpoint at or above `start_offset` resumes at the first retained offset at or above it. `start` applies only to partitions that were never committed or initialized.
-- A checkpoint below `start_offset` is handled by `on_expired`.
-- Records between the checkpoint and the active position at the time of a crash are delivered again.
-
-Reset:
-
-- `reset` is privileged and requires no live claims in the group.
-- It validates the requested positions against current read bounds.
-- It replaces the group's progress only if the request's expected stream ID and group-state revision match, and it advances the ownership versions.
-- A revision conflict is returned to the caller, never retried with a freshly read revision.
-
-### MQTT binding and operation flows
-
-- Transport: MQTT 5 request/response. No new packet types; works through existing clients, proxies, and authorization.
-- Command topics carry the stream name and, for group operations, the group. The expected `stream_id` travels in the request body.
-
-```text
-$streams/v1/<name>/<operation>                  describe, append, open (independent), fetch, seek, renew, close
-$streams/v1/<name>/groups/<group>/<operation>   open (group), commit, committed, reset
-```
-
-- The group is in the topic so topic-based authorization can allow or deny group progress updates per group with ordinary publish rules. Stream reads and appends are governed by the stream path.
-- Fetch, seek, renew, and close use the stream path for both reader kinds; their authorization was decided at open. Commit and committed always use the group path, so group rules govern every progress update.
-- The prefix is `$streams`, not `$stream`: a stream named `v1` or `groups` is valid today and would collide with the fixed segments, and the older `$s/<start>/<topic-filter>` subscription form already embeds a start selector in the topic.
-- Clients subscribe to a private response inbox and await SUBACK before issuing commands. Handles and inbox access are bound to the authenticated connection. Stream and group access are authorized.
-- Requests and results are non-retained QoS 1 messages with `Response-Topic` and `Correlation-Data`. Protocol traffic is never stored in streams.
-- Control bodies and results are JSON. Append payloads and fetched record payloads are raw bytes; metadata travels in MQTT properties, binary keys as base64. A `message-kind` property distinguishes records from results; payload content is never used to guess the type.
-
-Direct append: transport acknowledgment and storage success are separate.
-
-```mermaid
-sequenceDiagram
-    participant Producer
-    participant Broker
-    participant Log as Log store
-    Producer->>Broker: append with expected stream ID
-    Broker-->>Producer: Transport acknowledgment
-    Broker->>Broker: Validate and select partition
-    Broker->>Log: append encoded value
-    Log-->>Broker: Durable append success
-    Broker-->>Producer: Success with stream ID and partition
-```
-
-Fetch and optional group checkpoint: record delivery and receipt acknowledgment repeat for every record. The SDK exposes only the completed batch.
-
-```mermaid
-sequenceDiagram
-    participant Application
-    participant SDK
-    participant Broker
-    participant Control as Control store
-    Application->>SDK: fetch with limits
-    SDK->>Broker: fetch selected partitions
-    loop Each record
-        Broker-->>SDK: Record publication
-        SDK-->>Broker: Acknowledge bounded receipt
-    end
-    Broker-->>SDK: Batch completion and next offsets
-    SDK-->>Broker: Acknowledge completion receipt
-    SDK-->>Application: Complete ReadBatch
-    Application->>Application: Process all records
-    Application->>SDK: commit next offsets
-    SDK->>Broker: Checkpoint request
-    Broker->>Broker: Validate authoritative end bounds
-    Broker->>Control: Check ownership and save atomically
-    Control-->>Broker: Durable checkpoint success
-    Broker-->>SDK: Correlated checkpoint result
-    SDK-->>Application: Checkpoint success
-```
-
-- The initial binding sends one PUBLISH per record, then a completion result with the unique-record count and `next_offsets`.
-- A batch is a semantic unit with one safe continuation position, not a wire-efficiency mechanism: each record costs one PUBLISH and one PUBACK, and Receive Maximum `1` must work. A packed multi-record codec is a later capability.
-- The broker allows one outstanding fetch per reader. Buffer reservation, acknowledgment order, duplicate suppression, the retry cache, and reader generations are specified in Appendix A.3.
-
-### Retention and limits
-
-- Three limits, each applied per partition: `max_age_ms`, `max_records_per_partition`, `max_bytes_per_partition`.
-- Age: a record older than `max_age_ms` expires regardless of the other settings.
-- Count and bytes: `overflow` decides what happens when a write arrives at a full partition. `drop_old` expires the oldest records to make room; `reject_new` refuses the write.
-- These rules shape the write path and the storage layout, so they are fixed before a backend is chosen.
-- Hard limits are expensive. The broker must know the partition's exact usage on every write, which puts a usage counter on the write path and turns each append into a conditional transaction. The current implementation keeps usage tracking off the write path on purpose.
-- A stream picks a `limit_mode` at creation. It cannot be changed later.
-
-| `limit_mode` | How limits are enforced | `overflow` allowed |
+| Purpose | Client sends | Topic Name or Topic Filter |
 | --- | --- | --- |
-| `soft` (default) | Usage is tracked off the write path, as today. A partition may exceed its count or byte limit for a short, advertised time until expiration catches up. | `drop_old` only. |
-| `hard` | Usage is exact and checked on every write. The check, the usage update, any expiration it triggers, and the append happen as one recoverable operation per partition. The limit is never exceeded. | `drop_old` or `reject_new`. |
+| Ordinary publish | `PUBLISH` | Application topic, for example `devices/17/temp` |
+| Direct append | `PUBLISH`, QoS 1, RETAIN 0 | `$streams/v1/<name>/append` |
+| Consume all partitions | `SUBSCRIBE`, requested QoS 1 | `$streams/v1/<name>/partitions/+` |
+| Consume selected partitions | `SUBSCRIBE`, requested QoS 1 per filter | One `$streams/v1/<name>/partitions/<partition>` filter per selected partition |
+| Stop an all-partitions subscription | `UNSUBSCRIBE` | `$streams/v1/<name>/partitions/+` |
+| Stop selected partitions | `UNSUBSCRIBE` | List the `$streams/v1/<name>/partitions/<partition>` strings to stop; other partition subscriptions continue. |
+| Describe stream | `PUBLISH`, QoS 1, RETAIN 0, Response Topic, Correlation Data | `$streams/v1/<name>/describe` |
 
-- Soft limits ship first, with all three limits. Hard limits, and with them `reject_new`, ship only after a backend prototype shows they fit a throughput budget agreed during review. Until then `limit_mode = hard` returns `HARD_LIMITS_UNSUPPORTED` at creation.
+The MQTT Topic Filter is the subscription string: `$streams/v1/telemetry/partitions/1` selects partition `1`; `$streams/v1/telemetry/partitions/+` selects every partition. Only this final-level `+` wildcard is supported. Other wildcard forms and `$share/...` filters are not accepted.
 
-Rules in both modes:
+Use either one all-partitions filter or a list of explicit partition filters in a `SUBSCRIBE` packet. All stream filters in the packet name the same stream. Explicit entries create independently removable subscriptions, even when sent in one packet; they can cover any subset or all partitions. Split large explicit requests across packets if necessary to fit the server's receive limit and the client's `SUBACK` receive limit.
 
-- One policy per stream, applied to each partition on its own. A busy partition cannot use another partition's share.
-- Consumer groups never hold back expiration, however far behind they are.
-- Age expiration applies under either `overflow` setting, as in [JetStream](https://docs.nats.io/learn/jetstream/shaping-the-stream).
-- A record larger than the append size limit, or larger than `max_bytes_per_partition`, is rejected before anything is stored.
-- The broker records the new `start_offset` before it reclaims space, and exposes how far reclamation lags.
-- Partitions that share physical storage never expire each other's data.
-- Policy changes are versioned and applied in order.
-- Retained bytes count each uncompressed broker-encoded value once: the broker's per-record framing, topic, key, timestamp, `message_id`, and payload.
-- Detailed rules, storage interfaces, and recovery requirements: Appendix A.1 and A.2.
+### Publishers
+
+#### Ordinary MQTT publishing
+
+No stream-specific fields are required. For a stream named `telemetry` matching `devices/#`:
+
+```text
+Client -> Broker: PUBLISH
+  Topic Name: devices/17/temp
+  QoS: 1
+  RETAIN: 0
+  Packet Identifier: 10
+  Payload: {"temperature":21.5}
+
+Broker -> Client: PUBACK
+  Packet Identifier: 10
+  Reason Code: 0x00 (Success)
+```
+
+The broker evaluates the stream's key expression and selects a partition. The default key is the publishing Client ID. A stream fixes its key expression, key encoding, and hash version at creation; the same key continues to select the same partition.
+
+An ordinary publication can match several streams and still reaches live subscribers. Its `PUBACK` carries no stream result properties and does not confirm durable storage in any matching stream. A failed stream write is reported in that stream's metrics. Applications requiring a per-stream storage receipt use direct append.
+
+#### Direct append
+
+The append topic accepts one record per QoS 1, non-retained `PUBLISH`. Its payload is the record's raw payload. Requests are consumed by the broker's stream handler and are not forwarded to ordinary subscribers.
+
+| Request User Property | Required | Value |
+| --- | --- | --- |
+| `stream-id` | Yes | Expected immutable stream ID. |
+| `stream-topic` | Yes | Original application Topic Name; MUST match the stream's configured topic filter. |
+| `stream-partition` | No | Explicit partition ID. If omitted, use the stream's key rule. |
+| `stream-message-id` | No | Producer-supplied bytes encoded as standard padded base64. Stored and replayed; no deduplication is implied. |
+
+```text
+Client -> Broker: PUBLISH
+  Topic Name: $streams/v1/telemetry/append
+  QoS: 1
+  RETAIN: 0
+  Packet Identifier: 11
+  User Properties:
+    stream-id: s-9f3c
+    stream-topic: devices/17/temp
+    stream-partition: 1
+  Payload: {"temperature":21.5}
+
+Broker -> Client: PUBACK
+  Packet Identifier: 11
+  Reason Code: 0x00 (Success)
+  User Properties:
+    stream-id: s-9f3c
+    stream-partition: 1
+    partition-offset: 58
+```
+
+For this reserved append topic, the broker MUST delay successful `PUBACK` until the record is durable. The three result properties above are required. Acknowledged appends survive a restart with intact storage and the loss of one storage replica.
+
+- Validate stream identity, append authorization, publish authorization on `stream-topic`, topic-filter match, partition, key evaluation, and record size before storage.
+- Both publishing paths evaluate the key over the original topic, raw payload, and authenticated publishing Client ID (`message.topic`, `message.payload`, and `message.from`). Explicit partition placement overrides routing, but the evaluated key is still stored. Failed key evaluation rejects the append.
+- Direct append writes only the named stream. It neither delivers to live subscribers of `stream-topic` nor writes other matching streams. Publishing normally and appending directly stores two records.
+- A negative `PUBACK` rejects that append attempt without storing a record. A lost acknowledgment or connection leaves the outcome unknown; resubmission can duplicate the record. Rejection of a retry does not settle an earlier unknown outcome. Client libraries MUST NOT infer rejection from a timeout or automatically submit a new append on that basis.
+- Normal QoS 1 retransmission can also produce duplicates. Neither MQTT Packet Identifier nor `stream-message-id` is an idempotency key in this version.
+
+### Subscribers
+
+#### Start subscriptions
+
+A `SUBSCRIBE` request selects a named stream, one or more partitions, and a starting position for each partition. Each accepted subscription reads from that position and continues with newly appended records.
+
+The stream name addresses the current stream instance; `stream-id` identifies that instance. Deleting and recreating the stream under the same name creates a new instance with a new ID. Requests carrying the old ID fail with `STREAM_ID_MISMATCH`.
+
+| Scenario | Starting position | `stream-id` |
+| --- | --- | --- |
+| Read retained history | `earliest`: resolve once to the partition's current `start_offset`. | Optional |
+| Follow new records | `latest`: resolve once to the partition's current `end_offset`; wait for subsequent appends. | Optional |
+| Resume or replay from a known position | Integer offset per explicit partition filter, for example `42`: validate against current bounds and start inclusively at that position. | Required |
+
+| Request field | Required value |
+| --- | --- |
+| Topic Filters | Either one `$streams/v1/<name>/partitions/+`, or one `$streams/v1/<name>/partitions/<partition>` per selected partition, with explicit, static partition IDs and no duplicates. All stream filters in the packet name the same stream. |
+| User Property `stream-id` | Expected immutable stream ID, at most once per packet. Required if any start selector is numeric; otherwise optional. When supplied, it must match even for `earliest` or `latest`. |
+| User Property `partition-offset` | Required for the all-partitions filter: `earliest` or `latest`, applied independently to each partition. Absent with explicit partition filters. |
+| User Property `partition-offset/<partition>` | Required for explicit partition filters: exactly one per selected partition, containing an integer offset, `earliest`, or `latest`. Absent with the all-partitions filter; no entries for unselected partitions. |
+
+The partition suffix in `partition-offset/<partition>` associates a packet-wide User Property with its Topic Filter, allowing different offsets in one `SUBSCRIBE`.
+
+Subscription Options and Subscription Identifier are standard MQTT fields. Stream subscriptions require QoS `1`, No Local `0`, and a fresh Subscription Identifier per request; do not reuse an identifier while associated subscriptions or in-flight deliveries remain. Retain As Published and Retain Handling keep their MQTT meanings; the offset selector controls replay. Examples use options byte `0x21`.
+
+##### All partitions
+
+This request reads retained history from every partition and then follows new records. Use `partition-offset: latest` to start at each partition's current end instead. No prior `describe` request or knowledge of the partition count is needed.
+
+```text
+Client -> Broker: SUBSCRIBE
+  Packet Identifier: 19
+  Subscription Identifier: 100
+  User Properties:
+    partition-offset: earliest
+  Payload:
+    Topic Filter: $streams/v1/telemetry/partitions/+
+    Subscription Options: 0x21
+
+Broker -> Client: SUBACK
+  Packet Identifier: 19
+  Reason Codes: [0x01] (Granted QoS 1)
+  User Properties:
+    stream-id: s-9f3c
+    partition-offset/0: 100
+    partition-start-offset/0: 100
+    partition-end-offset/0: 113
+    partition-offset/1: 41
+    partition-start-offset/1: 41
+    partition-end-offset/1: 59
+    partition-offset/2: 7
+    partition-start-offset/2: 7
+    partition-end-offset/2: 10
+```
+
+The broker accepts all partitions or rejects the filter with one `SUBACK` reason code. It checks read authorization and availability for every partition before accepting; a failure starts none of them. This is one subscription with a separate delivery cursor for each static partition ID.
+
+##### Selected partitions
+
+List explicit filters to choose partitions, start them at different positions, or unsubscribe from them independently:
+
+```text
+Client -> Broker: SUBSCRIBE
+  Packet Identifier: 20
+  Subscription Identifier: 101
+  User Properties:
+    partition-offset/0: earliest
+    partition-offset/1: earliest
+    partition-offset/2: latest
+  Payload:
+    Topic Filter: $streams/v1/telemetry/partitions/0
+    Subscription Options: 0x21
+    Topic Filter: $streams/v1/telemetry/partitions/1
+    Subscription Options: 0x21
+    Topic Filter: $streams/v1/telemetry/partitions/2
+    Subscription Options: 0x21
+
+Broker -> Client: SUBACK
+  Packet Identifier: 20
+  Reason Codes: [0x01, 0x01, 0x01] (Granted QoS 1 for each filter)
+  User Properties:
+    stream-id: s-9f3c
+    partition-offset/0: 100
+    partition-start-offset/0: 100
+    partition-end-offset/0: 113
+    partition-offset/1: 41
+    partition-start-offset/1: 41
+    partition-end-offset/1: 59
+    partition-offset/2: 10
+    partition-start-offset/2: 7
+    partition-end-offset/2: 10
+```
+
+This packet creates three independent subscriptions. A single-partition request uses the same format with one Topic Filter and one offset property.
+
+For both forms, the broker resolves the name to one stream ID for the request, checks any supplied ID, and binds all accepted subscriptions to that identity. After shared request fields pass validation, it checks each partition's read authorization, availability, options, and offset. It returns one `SUBACK` reason code per filter, in request order, before sending records for accepted subscriptions. With explicit filters, a partition's failure does not prevent other valid partitions from being accepted.
+
+For every accepted partition, `SUBACK` includes `partition-offset/<partition>`, `partition-start-offset/<partition>`, and `partition-end-offset/<partition>`, plus the common `stream-id`, even if the request omitted it. An all-partitions result includes every partition. The returned offsets are numeric, including for `earliest` and `latest`. Applications save the ID together with those positions for later replay. Bounds and selectors are resolved independently per partition; they do not represent a simultaneous snapshot or reserve retention.
+
+Two clients may subscribe to the same partition at different offsets. Each receives its own replay. A subscription grants no exclusive ownership.
+
+#### Receive records
+
+Each stored record is delivered as one QoS 1, non-retained `PUBLISH` on its concrete `$streams/v1/<name>/partitions/<partition>` topic, including for an all-partitions subscription. The broker originates this delivery at QoS 1 even if the original application publication used QoS 0. Record metadata is carried in User Properties; the payload is unchanged.
+
+Deliveries from partitions subscribed in one packet share its Subscription Identifier. Use that identifier together with `stream-partition` to route each delivery. A record describes one partition, so its metadata uses `partition-offset` without a partition suffix.
+
+An all-partitions subscription and explicit partition subscriptions may coexist in one session. Their replays are independent: the broker sends separate deliveries carrying each subscription's identifier, even when they contain the same stored record.
+
+```text
+Broker -> Client: PUBLISH
+  Topic Name: $streams/v1/telemetry/partitions/1
+  QoS: 1
+  RETAIN: 0
+  DUP: 0
+  Packet Identifier: 300
+  Subscription Identifier: 101
+  User Properties:
+    stream-message-kind: record
+    stream-id: s-9f3c
+    stream-partition: 1
+    partition-offset: 58
+    partition-next-offset: 59
+    stream-timestamp: 1791415200123456
+    stream-key: Y2FyLTE3
+    stream-topic: devices/17/temp
+  Payload: {"temperature":21.5}
+
+Client -> Broker: PUBACK
+  Packet Identifier: 300
+  Reason Code: 0x00 (Success)
+```
+
+| Delivery User Property | Meaning |
+| --- | --- |
+| `stream-message-kind` | Possible values: `record` for a raw record payload, or `error` for a JSON subscription error notification. |
+| `stream-id`, `stream-partition`, `partition-offset` | Permanent record identity. |
+| `partition-next-offset` | Position from which to resume after processing this record and every earlier delivered record in this partition. MUST NOT skip any record after `partition-offset`. |
+| `stream-timestamp` | Stored broker acceptance time, decimal epoch microseconds. |
+| `stream-key` | Stored key bytes, standard padded base64. |
+| `stream-topic` | Original application Topic Name. |
+| `stream-message-id` | Present only if supplied on direct append; standard padded base64. |
+
+On record deliveries, all properties except `stream-message-id` are required. Original MQTT Packet Identifiers, delivery flags, and application User Properties are not part of the record format. Stream replay does not inherit the original publication's Message Expiry Interval; stream retention governs replay availability.
+
+- First deliveries within a partition follow increasing offsets. QoS 1 duplicates can repeat an earlier offset; clients identify records by stream ID, partition, and offset, not by MQTT Packet Identifier or DUP alone.
+- After the current end, the subscription remains active and delivers new appends. There is no fetch request, batch completion packet, or per-record application acknowledgment in this API.
+- Receive Maximum bounds outstanding QoS 1 deliveries across the connection. Brokers MUST also bound prefetch and client libraries MUST bound buffering; Receive Maximum alone does not bound application work after automatic `PUBACK`.
+- A delivery `PUBACK` acknowledges MQTT receipt. It MUST NOT be interpreted as durable application progress. Negative `PUBACK` reason codes likewise do not define retry or dead-letter behavior for a record.
+- Applications save `(stream_id, partition, partition-next-offset)` after processing. With concurrent processing, save only progress for a completed prefix of the partition. After a failure, subscribe again using that saved position; records processed before the save may repeat.
+
+#### Stop subscriptions
+
+`UNSUBSCRIBE` lists the same subscription strings originally sent in `SUBSCRIBE`. It removes only those entries and needs no stream ID or offset properties. To stop an all-partitions subscription:
+
+```text
+Client -> Broker: UNSUBSCRIBE
+  Packet Identifier: 21
+  Payload:
+    Topic Filter: $streams/v1/telemetry/partitions/+
+
+Broker -> Client: UNSUBACK
+  Packet Identifier: 21
+  Reason Codes: [0x00] (Success)
+```
+
+Unsubscribing from `/partitions/1` does not exclude partition `1` from an existing `/partitions/+` subscription. Selective unsubscribe requires explicit partition subscriptions.
+
+For an eight-partition stream `events`, with explicit subscriptions to partitions `0` through `7`, this packet stops `0` through `3` while `4` through `7` continue:
+
+```text
+Client -> Broker: UNSUBSCRIBE
+  Packet Identifier: 24
+  Payload:
+    Topic Filter: $streams/v1/events/partitions/0
+    Topic Filter: $streams/v1/events/partitions/1
+    Topic Filter: $streams/v1/events/partitions/2
+    Topic Filter: $streams/v1/events/partitions/3
+
+Broker -> Client: UNSUBACK
+  Packet Identifier: 24
+  Reason Codes: [0x00, 0x00, 0x00, 0x00] (Success for each filter)
+```
+
+#### Replay and reconnect
+
+To restart an explicit subscription to partition `1` of `telemetry` after processing the record at offset `58`, include the ID learned from `SUBACK` with the saved numeric position:
+
+```text
+Client -> Broker: SUBSCRIBE
+  Packet Identifier: 22
+  Subscription Identifier: 102
+  User Properties:
+    stream-id: s-9f3c
+    partition-offset/1: 59
+  Payload:
+    Topic Filter: $streams/v1/telemetry/partitions/1
+    Subscription Options: 0x21
+```
+
+Subscriptions to partitions `0` and `2` continue. A replay uses an earlier valid position. Already in-flight deliveries can outlive unsubscription or replacement; clients complete their MQTT acknowledgment exchange and identify them by partition and old Subscription Identifier. The broker MUST preserve that identifier on retransmission. Clients MUST NOT advance a restarted partition's saved position from old deliveries.
+
+| Situation | Behavior |
+| --- | --- |
+| A new `SUBSCRIBE` replaces the same Topic Filter | Validate first, then restart at the newly requested offset with the new Subscription Identifier. A rejected replacement leaves the existing subscription unchanged. |
+| Stop or pause selected explicit subscriptions | `UNSUBSCRIBE` their exact subscription strings. Resume with a new `SUBSCRIBE` and an explicit position for each partition. |
+| Switch from all partitions to a subset or saved numeric positions | `UNSUBSCRIBE` the `/partitions/+` filter, then subscribe to explicit partition filters with the saved stream ID and position for each selected partition. |
+| Reconnect without an MQTT session | Send new `SUBSCRIBE` packets using application-saved positions and stream IDs. |
+| Reconnect with Session Present `1` | MQTT session state includes each subscription's pinned stream ID and partition set, resolved positions, delivery cursors, and in-flight QoS 1 records. Continue transport delivery; do not re-evaluate `earliest` or `latest`. To replay from application-saved progress, use explicit partition subscriptions. |
+| Stream deleted and recreated | Existing subscriptions remain bound to the old ID and fail; they MUST NOT attach to the replacement stream. |
+
+Persisted MQTT delivery state is separate from application processing progress. The broker MUST recover the cursor together with in-flight deliveries without skipping records. Session expiry or loss does not erase records still retained in the stream. Subscriptions MUST NOT hold back retention; a delivery cursor that falls behind retention produces an explicit error. Already in-flight records may still be retransmitted after their stream retention expires.
+
+#### Subscription errors
+
+An invalid initial position is rejected for that partition in `SUBACK`; the broker MUST NOT silently clamp it to retained history. Here partition `0` succeeds and partition `1` fails:
+
+```text
+Client -> Broker: SUBSCRIBE
+  Packet Identifier: 23
+  Subscription Identifier: 103
+  User Properties:
+    stream-id: s-9f3c
+    partition-offset/0: 100
+    partition-offset/1: 20
+  Payload:
+    Topic Filter: $streams/v1/telemetry/partitions/0
+    Subscription Options: 0x21
+    Topic Filter: $streams/v1/telemetry/partitions/1
+    Subscription Options: 0x21
+
+Broker -> Client: SUBACK
+  Packet Identifier: 23
+  Reason Codes: [0x01, 0x83] (Granted QoS 1; Implementation specific error)
+  User Properties:
+    stream-id: s-9f3c
+    partition-offset/0: 100
+    partition-start-offset/0: 100
+    partition-end-offset/0: 113
+    stream-error/1: OFFSET_OUT_OF_RANGE
+    partition-start-offset/1: 41
+    partition-end-offset/1: 59
+```
+
+If retention overtakes an active subscription, the broker stops it and sends an error on the affected partition's concrete topic. For an all-partitions subscription, this stops delivery from every partition in that subscription; other subscriptions continue. An error on the explicit subscription to partition `1` looks like this:
+
+```text
+Broker -> Client: PUBLISH
+  Topic Name: $streams/v1/telemetry/partitions/1
+  QoS: 1
+  RETAIN: 0
+  Packet Identifier: 301
+  Subscription Identifier: 102
+  Content Type: application/json
+  User Properties:
+    stream-message-kind: error
+    stream-id: s-9f3c
+    stream-partition: 1
+    stream-error: OFFSET_OUT_OF_RANGE
+  Payload: {"position":"59","start_offset":"70","end_offset":"95"}
+
+Client -> Broker: PUBACK
+  Packet Identifier: 301
+  Reason Code: 0x00 (Success)
+```
+
+Error notifications have the identity properties above and a JSON object payload. `OFFSET_OUT_OF_RANGE` includes all three shown positions; other errors use `{}` unless specified otherwise. Error notifications carry no `partition-next-offset` and do not advance processing progress. The subscription remains stopped until replaced or unsubscribed; records already in flight may still arrive. This also applies after session resumption.
+
+`STREAM_DELETED`, `UNAVAILABLE`, and `RECORD_TOO_LARGE` use the same notification form. The broker MUST NOT skip a record that exceeds the client's Maximum Packet Size. If even the error notification cannot fit, it disconnects with reason `0x95` (Packet too large), without advancing past the undelivered record.
+
+### Error codes and acknowledgment rules
+
+Use standard MQTT Reason Codes plus a machine-readable error User Property: `stream-error/<partition>` for an explicit partition filter's `SUBACK` result, or `stream-error` for an all-partitions filter, `PUBACK`, delivery notification, or error applying to the whole stream request. Human-readable Reason String is optional and MUST NOT be parsed for protocol decisions.
+
+| `stream-error` | MQTT acknowledgment reason | Meaning |
+| --- | --- | --- |
+| `INVALID_REQUEST` | `0x83` | Missing, repeated, invalid, or unsupported request fields/options, including a numeric start offset without `stream-id`. |
+| `STREAM_NOT_FOUND` | `0x83` | No stream exists with that name. |
+| `STREAM_ID_MISMATCH` | `0x83` | Name exists, but expected ID differs. |
+| `PARTITION_NOT_FOUND` | `0x83` | Partition is outside the stream's configured range. |
+| `OFFSET_OUT_OF_RANGE` | `0x83` (`SUBACK`) | Position is below start or above end; include `partition-start-offset/<partition>` and `partition-end-offset/<partition>`. |
+| `NOT_AUTHORIZED` | `0x87` | Read, append, describe, or original-topic publish permission denied. |
+| `TOPIC_MISMATCH` | `0x90` (`PUBACK`) | Append's original topic is invalid or does not match the stream filter. |
+| `INVALID_FILTER` | `0x8F` (`SUBACK`) | Filter is neither a valid explicit partition filter nor the supported all-partitions filter. |
+| `KEY_EVALUATION_FAILED` | `0x83` (`PUBACK`) | Stream key expression could not produce a key. |
+| `RECORD_TOO_LARGE` | `0x83` (`PUBACK`) | Record exceeds the stream's append or per-partition byte limit. |
+| `QUOTA_EXCEEDED` | `0x97` | Append rejected by a hard limit, or subscription resource budget exhausted. |
+| `UNAVAILABLE` | `0x83` | Required storage authority unavailable before the operation was accepted. |
+
+Authorization is checked before returning stream identity or bounds. An all-partitions filter requires read permission on every partition. A failed filter creates no new subscription and leaves any previous subscription to that filter unchanged.
+
+Errors in shared request fields, mixed stream names, mixed all-partitions and explicit filters, duplicate filters, or offset properties for unselected partitions reject all stream filters in the packet with `INVALID_REQUEST`. The all-partitions form rejects numeric `partition-offset` values or any `partition-offset/<partition>` properties. The explicit form rejects an unsuffixed `partition-offset`; missing, duplicated, or invalid offsets for a selected partition reject that partition. An invalid filter receives `0x8F` without partition-keyed properties. Ordinary filters, if present, are handled normally.
+
+If an append's storage outcome is uncertain, the broker MUST NOT report a definite rejection. It closes the connection with `DISCONNECT` reason `0x80` (Unspecified error), and the client treats any append without a definitive `PUBACK` as having an unknown outcome.
+
+If Request Problem Information is `0`, reject stream append/subscription requests with `0x83` and omit User Properties. Check the full acknowledgment size before applying any stream subscription changes. If its required properties cannot fit the client's receive limit, reject all stream filters with `0x83`, including `stream-error: INVALID_REQUEST` only if it fits; append uses the same rejection rule. If even the minimal acknowledgment cannot fit, disconnect with reason `0x95`. Clients MUST handle a negative MQTT reason without diagnostic properties.
+
+For an unsupported QoS on append or describe, reject QoS 2 with `PUBREC` reason `0x83`, or QoS 0 with `DISCONNECT` reason `0x83`, before performing the operation. Reject RETAIN `1` with `INVALID_REQUEST` and do not retain the request. Malformed MQTT packets follow MQTT's own error handling.
+
+### Client-library requirements
+
+No Streams SDK is required. A client library supporting this API needs the following MQTT capabilities:
+
+| Capability | Required behavior |
+| --- | --- |
+| Subscription requests | Set a Subscription Identifier; support the all-partitions filter with `partition-offset`, and multiple explicit filters with `partition-offset/<partition>` properties in one `SUBSCRIBE`. |
+| Acknowledgment results | Expose `PUBACK` and `SUBACK` reason codes and User Properties. Treat a success missing required protocol properties as an incompatible response, not proof that the stream operation succeeded. |
+| Record callbacks | Expose raw payload, Topic Name, Subscription Identifier, and all protocol User Properties; route by identifier and partition and distinguish `record` from `error` using `stream-message-kind`. |
+| Offset values | Preserve base-10 strings or use lossless integer types; do not round through floating-point numbers. |
+| Reconnect | Let the application select saved offsets; do not automatically restart from an unresolved `latest` selector. |
+| Flow control | Expose Receive Maximum and bound buffers. Manual acknowledgments, if offered, must preserve MQTT acknowledgment ordering across the connection. |
+
+### Management: describe a stream
+
+Describe uses MQTT request/response to discover partition count, bounds, and configuration. Initial `earliest`/`latest` subscriptions to all or known partitions need no describe request; neither does resuming with a saved stream ID and offsets. Stream creation, policy updates, and deletion remain deployment management operations.
+
+The client subscribes to an authorized private response topic and waits for `SUBACK` before publishing the request. The broker checks both stream access and the client's right to receive on the Response Topic; other clients MUST NOT be able to forge replies on that topic. The request is handled internally, not forwarded to subscribers of the describe topic.
+
+```text
+Client -> Broker: SUBSCRIBE
+  Packet Identifier: 30
+  Payload:
+    Topic Filter: clients/reader-7/stream-replies
+    Subscription Options: 0x21
+
+Broker -> Client: SUBACK
+  Packet Identifier: 30
+  Reason Codes: [0x01] (Granted QoS 1)
+
+Client -> Broker: PUBLISH
+  Topic Name: $streams/v1/telemetry/describe
+  QoS: 1
+  RETAIN: 0
+  Packet Identifier: 31
+  Response Topic: clients/reader-7/stream-replies
+  Correlation Data: 0x01020304
+  Content Type: application/json
+  Payload: {}
+
+Broker -> Client: PUBACK
+  Packet Identifier: 31
+  Reason Code: 0x00 (Success)
+
+Broker -> Client: PUBLISH
+  Topic Name: clients/reader-7/stream-replies
+  QoS: 1
+  RETAIN: 0
+  Packet Identifier: 400
+  Correlation Data: 0x01020304
+  Content Type: application/json
+  Payload:
+    {"status":"ok","name":"telemetry","stream_id":"s-9f3c",
+     "topic_filter":"devices/#","partition_count":3,
+     "partitions":[
+       {"partition":0,"start_offset":"100","end_offset":"113"},
+       {"partition":1,"start_offset":"41","end_offset":"59"},
+       {"partition":2,"start_offset":"7","end_offset":"10"}],
+     "key_expression":"message.from","key_rule_version":"1",
+     "max_record_bytes":1048576,
+     "retention":{"limit_mode":"soft","max_age_ms":86400000,
+       "max_records_per_partition":null,"max_bytes_per_partition":null,
+       "overflow":"drop_old"}}
+
+Client -> Broker: PUBACK
+  Packet Identifier: 400
+  Reason Code: 0x00 (Success)
+```
+
+The shown success fields are required. The key-rule version is opaque; clients need not reproduce broker routing. Partition bounds are observed independently, not as a cross-partition snapshot. `max_record_bytes` limits the stored record size as defined below, not the MQTT packet size. `null` means an unlimited retention setting.
+
+The request body is `{}` or `{"stream_id":"s-9f3c"}` to check an expected identity. Response Topic, Correlation Data, and Content Type `application/json` are required. A result error is JSON, for example `{"status":"error","code":"STREAM_ID_MISMATCH"}`. Valid requests receive one logical result with exactly the request's Correlation Data; QoS 1 duplicates are possible. Malformed or unauthorized requests may be rejected with a negative `PUBACK` and no result. If the response cannot fit the client's Maximum Packet Size, reject the request with `QUOTA_EXCEEDED` before accepting it. Here, successful request `PUBACK` acknowledges transport acceptance only; the correlated result completes discovery. Describe requests are read-only and may be retried with new Correlation Data after a timeout.
+
+### Retention and storage requirements
+
+| Setting | Effect, independently for each partition |
+| --- | --- |
+| `max_age_ms` | Expire old records regardless of count or byte settings. |
+| `max_records_per_partition` | Bound retained record count. |
+| `max_bytes_per_partition` | Bound retained bytes. |
+| `overflow: drop_old` | Expire the oldest prefix to make room. |
+| `overflow: reject_new` | Reject the new append without removing history for that attempt; requires hard limits. |
+| `limit_mode: soft` | Track usage off the write path; count/byte limits may be exceeded until expiration catches up within an advertised lag bound. Only `drop_old` is allowed. |
+| `limit_mode: hard` | Atomically check usage, expire if needed, and append; count/byte limits are never exceeded by an append. |
+
+Soft limits ship first. Hard limits and `reject_new` require a backend prototype that meets a throughput budget agreed during review; until supported, management rejects that configuration.
+
+- Retained bytes count the uncompressed broker-encoded record once, including framing, topic, key, timestamp, optional message ID, and payload. Physical replicas and indexes are separate metrics.
+- A record larger than `max_record_bytes` or `max_bytes_per_partition` is rejected before storing it or dropping history.
+- Persist the new `start_offset` before reclaiming data. Expiration MUST NOT remove another partition's records outside that partition's policy, even when physical storage is shared.
+- Age expiration uses persisted, nondecreasing append-age metadata; advertise expiration lag and clock assumptions. Acceptance timestamps and offsets are not expiration clocks for clients.
+- Serialize retention-policy revisions with partition writes. Expose desired and effective revisions during a rollout; lowering a hard `reject_new` limit can block writes until existing usage fits. Raising a limit cannot restore history.
+- Recover stream identities, partition bounds, acknowledged appends, and policy state consistently. A historical restore or import receives a new stream ID. Offset allocation MUST remain monotonic through failover and storage rotation.
+
+Storage selection is an implementation decision. Existing Durable Storage, a stream-specific DS layout, and a dedicated backend remain candidates. Each must prove ordered partition reads, stable offsets and bounds, retention isolation, bounded delivery buffering, and the durability contract above. No consumer-group control store or coordination mechanism is selected by this EIP.
 
 ## Configuration Changes
 
-- Partitioned-format stream definitions add the fields below. Existing formats keep their configuration semantics.
-- `describe` returns the stream definition, capabilities, limits, per-partition bounds, and the effective retention policy with any pending revision.
+Partitioned streams add immutable `partition_count`, `key_expression`, `key_rule_version`, and `limit_mode`. The default key expression is `message.from`; partitioned-format expressions may use only `message.topic`, `message.payload`, and `message.from`. Expression syntax and supported key-rule versions are implementation-defined and validated at creation.
 
-| Field | Meaning |
-| --- | --- |
-| `partition_count` | Number of partitions. Fixed at creation. |
-| `key_expression` | Key expression over `message.topic`, `message.payload`, and `message.from`. Fixed at creation. |
-| `key_rule_version` | Version of the result encoding and hash. Set by the broker at creation; read-only. |
-| `limit_mode` | `soft` (default) or `hard`. Fixed at creation. `hard` is rejected until it ships. |
-| `max_age_ms` | Time-expiration limit. |
-| `max_records_per_partition` | Maximum number of retained records per partition. |
-| `max_bytes_per_partition` | Maximum retained bytes per partition, counted as described in Retention and limits. |
-| `overflow` | `drop_old` (default) or `reject_new` when a count or byte limit is reached. `reject_new` requires `limit_mode = hard`. |
+Retention settings are `max_age_ms`, `max_records_per_partition`, `max_bytes_per_partition`, and `overflow`. Limits accept positive values or explicit unlimited; omission uses deployment defaults at creation. `soft` and `drop_old` are the defaults. Also configure and expose record-size limits, subscription resource budgets, and soft-limit expiration lag. Failed stream writes are counted per stream.
 
-- Limits accept positive values or explicit unlimited. An omitted limit takes the deployment default at creation.
-- Also configured or advertised:
-    * the append size limit and the fetch budget limits;
-    * per-connection buffer and request budgets;
-    * the claim renewal interval and expiry;
-    * the soft-limit expiration lag bound.
-- Failed stream writes are counted in per-stream metrics.
-- Exact configuration paths and defaults remain to be agreed.
+Exact EMQX configuration paths and default limit values remain implementation choices; they do not change the packet contract.
 
 ## Backwards Compatibility
 
-- `$stream/<name>` subscriptions and existing-format storage semantics stay intact. Partitioned streams are opt-in at creation, and their commands use a separate versioned topic prefix. Ordinary publishers are unaffected.
-- `$stream/<name>` subscriptions also work on partitioned streams, so existing consumers need no change when a stream is recreated in the partitioned format:
-    * partitions are merged into one delivery flow with no cross-partition order;
-    * `earliest` and `latest` resolve per partition to `start_offset` and `end_offset`;
-    * `stream-offset` timestamp selectors are resolved per partition against stored acceptance time;
-    * the `ts` and `key` user properties stay, and `partition` and `offset` properties are added so a consumer can move to the command protocol from a known position;
-    * a timestamp selector is a start hint, not a stable position; existing timestamp bookmarks are not converted to offsets.
-- Last-value streams keep their current format, layout, and API.
-- Copying history from an existing-format stream into a partitioned stream, if offered, allocates a new stream ID like any restore or import (Appendix A.2), so consumers must supply explicit start positions. No live backend switching or in-place repartitioning is implied.
-
-## Backend Feasibility
-
-- DS is a candidate, not a dependency of the contract. Its [append API](https://github.com/emqx/emqx/blob/release-63/apps/emqx_durable_storage/src/emqx_ds.erl) accepts a physical shard, so explicit producer placement can use a stored logical-partition mapping.
-- The same API warns that dirty appends (writes that bypass the transaction's conflict check) are outside optimistic-transaction conflict tracking: a quota check followed by an unchanged dirty append does not give hard limits.
-- Hard limits on DS need a single writer per partition in front of the log. With optimistic transactions, writers on several nodes conflict on the partition's usage counter.
-- Either all appends for a partition go through one process with its own failover, or the backend checks the limit on the leader. That cost is measured on the prototype and does not apply to soft limits.
-
-| Log candidate | Mapping and work to prove |
-| --- | --- |
-| Existing DS layout | One ordered internal DS stream per public partition per storage generation, with a stable partition-to-shard mapping. The key stays in the value, not the topic, so a partition is one ordered DS stream rather than one per key as today. Prove ordered traversal, authoritative bounds, and limit checks with recovery. Per-partition retention isolation is a layout change, not a mapping: unlimited regular streams today expire by dropping generations shared by every regular stream under one global period, and per-stream limits exist only by moving the stream into the transactional lastvalue database with per-record deletion. Prove per-stream age, count, and byte policies without putting every record on that transactional path. |
-| Stream-specific DS layout | Store/index by public partition and offset, with bounds, usage, and policy state; retain useful DS replication. Identify any write/recovery API changes beyond the layout itself. |
-| Dedicated backend | Replicated stream segments or an ordered transactional store. Include replication, recovery, cleanup, backup, and operating tools in its cost. |
-
-The control store needs conditional atomic updates with revisions, not an ordered log:
-
-| Control candidate | Mapping and work to prove |
-| --- | --- |
-| DS pmap transactions (default candidate) | `emqx_mq_state_storage` already persists message-queue consumer progress through `emqx_ds_pmap` inside DS transactions, whose conflict tracking gives conditional atomic updates. Prove ownership-version and revision checks, expiry evaluation at apply time, and recovery-cut compatibility with the log store. |
-| Mria/Mnesia transactions | Cluster-wide transactions exist today. Prove the durability profile under replica loss and a consistent backup/restore cut with the log. |
-| Backend-native store | If a dedicated log backend is selected, its transactional store. Include its tooling in the backend cost. |
-
-- DS's [monotonic timestamp allocator](https://github.com/emqx/emqx/blob/release-63/apps/emqx_durable_storage/src/emqx_ds_optimistic_tx.erl) is a candidate sparse offset source, subject to failover and generation-rotation proof: the leader resumes from the last persisted timestamp, and the generation-rotation path notes that the timestamp it advanced is not yet persisted. Its use does not establish the authoritative end or the retention contract.
-- Legacy timestamp selectors on partitioned streams need a per-partition timestamp-to-offset lookup: trivial when offsets are allocated from DS timestamps and those equal the acceptance time, a sparse index otherwise.
-- The DS API is the reuse boundary. Adapting the message queue (MQ) consumer, the ExtSub handler, or shared-subscription coordination is optional.
-- Storage-independent mapping: an ordered database keyed by `(stream_id, partition, offset)` that serializes allocation, append, usage, and logical expiration in a partition transaction, with conditional transactions for group state. This is a feasibility model, not measured evidence; compare it against DS rather than making current DS behavior part of the API.
+- Ordinary MQTT publishers, including MQTT 3.1.1 publishers, need no changes. The API defined here requires MQTT 5.0.
+- Existing `$stream/<name>` subscriptions remain available. On partitioned streams this compatibility subscription merges partitions without cross-partition ordering; it is separate from the versioned API above.
+- Legacy `earliest`, `latest`, and timestamp selectors retain their existing meaning. Timestamp selectors resolve per partition against stored acceptance time and do not become stable offset bookmarks.
+- Legacy deliveries retain `ts` and `key` properties and add `stream-id`, `partition`, and `offset` for identifying records. New applications use the topics and property names specified above.
+- Last-value streams keep their existing format and API. Recreating a stream in the partitioned format or importing history allocates a new stream ID; old offsets MUST NOT silently apply to it.
 
 ## Declined Alternatives
 
-- **Expose DS cursors or physical shards:** would couple public replay positions and partition ownership to storage layout and movement.
-- **Extend the subscription API instead of adding a command protocol:** partition and offset selectors could be added to `$stream/<name>` subscriptions, with MQTT flow control providing batching. A subscription has no batch boundary: the client must track per-record positions, there is no bounded wait or safe continuation across gaps, and checkpoints still need a command channel. The command protocol does not win on wire efficiency, so the subscription path stays for simple consumers and gains partition and offset metadata.
-- **Hard limits for every stream:** would put a per-partition conditional transaction on every write and reverse the deliberate decision to keep usage tracking off the write path. Made a per-stream mode and staged on measured cost.
-- **Privileged reset as the only way past an expired checkpoint:** would require an operator whenever a consumer is down longer than retention. `on_expired` at open covers the common case explicitly.
-- **Commands under the existing `$stream` prefix:** a stream named `v1` or `groups` is valid today, so the command namespace cannot share the prefix.
-- **Readers that survive reconnects or session takeover:** would require replicated reader state and a second ownership mechanism inside the broker. A reader that dies with its connection and recovers from saved progress gives the same at-least-once result with one mechanism.
-- **Require client-side automatic partitioning:** would require publisher changes and duplicate routing-expression implementations; explicit placement already enables application-specific routing.
-- **Use MQTT acknowledgments as checkpoints:** transport receipt cannot establish completed application processing or a durable group update.
-- **Defer retention design until after selecting storage:** hard limits and per-partition policies determine the write path and layout.
-- **Require producer batches or JSON/CBOR payload envelopes at launch:** raw single-record append is sufficient initially. Producer batching, deduplication, filtering, limits shared across a whole stream, and repartitioning need separately specified capabilities.
-
-## Appendix A: Contract details
-
-Rules that bind implementations and their acceptance tests.
-
-### A.1 Retention rules
-
-- `drop_old` expires the smallest prefix needed for the new record to fit. `reject_new` rejects a write that would exceed a limit without removing history for that attempt.
-- Age expiration uses persisted, nondecreasing partition append-age metadata, separate from acceptance timestamps and offsets; advertise expiration delay and clock assumptions.
-- With hard limits, the limit check, the exact usage update, any expiration it triggers, and the append itself form one recoverable operation. Appends with an unknown outcome keep the room they reserved. A definite rejection leaves no append or associated expiration; oversized records are rejected before dropping history.
-- With soft limits, usage is tracked off the write path and size-based expiration may run behind the writes by an advertised bound. Oversized records are still rejected before storage.
-- Persist a retention boundary before physical reclamation. Expose cleanup lag; shared physical storage must not expire another partition outside its policy.
-- Policy changes use durable revisions serialized with partition writes.
-- Expose the desired revision and each partition's effective revision; acknowledge full application only after all partitions apply it.
-- Allow one pending rollout and reject stale revisions.
-- Lowering limits under `reject_new` may leave existing usage above the limit; new writes stay blocked until usage fits. `drop_old` applies the required expiration. Raising limits cannot restore history.
-- Physical copies, indexes, and expired bytes awaiting cleanup are metrics separate from retained bytes.
-
-### A.2 Storage interfaces and recovery
-
-The backend receives encoded values, with no MQTT-specific data model:
-
-```text
-LogEntry = {offset, value: bytes}
-
-LogStorage:
-    create(stream_id, definition) -> result
-    append(stream_id, partition, values) -> success | rejected | outcome_unknown
-    bounds(stream_id, partition) -> {start_offset, end_offset}
-    read(stream_id, partition, from_offset, limits) -> {entries, next_offset, bounds}
-    offset_at(stream_id, partition, timestamp) -> offset   # Legacy timestamp selectors.
-    apply_retention_policy(stream_id, partition, revision, policy) -> result
-    retention_state(stream_id, partition) -> policy, revision, retained/reserved usage
-    advance_retention(stream_id, partition, new_start_offset) -> result
-    delete(stream_id) -> result
-
-ControlState:
-    read(scope) -> {state, revision}
-    update(scope, conditions, changes) -> {new_revision} | rejected | outcome_unknown
-```
-
-- Creation, deletion, and policy application are retry-safe. Partially created streams stay unavailable. Deletion invalidates the ID before asynchronous cleanup and prevents late writes.
-- Retention advancement must remain authorized by the current policy.
-- Append preserves input order within one partition. A multi-value call allows broker batching but gives no all-or-nothing guarantee: success covers every value, a definite rejection stores none, and an unknown outcome can include a stored subset.
-- Control updates validate all conditions and persist all changes atomically within one stream definition or one group. The log store and control store may use different backends. No transaction across log append, checkpoint, and external side effects is required.
-- Backends distinguish invalid input, expired positions, lost ownership, rejection by a limit, unavailable authority, and unknown write outcomes.
-- Lossless recovery preserves identity, bounds, acknowledged control state, and retention usage and policies; resolves pending work; and invalidates old reader handles and claims.
-- Historical restore or import allocates a new `stream_id` and starts with no consumer groups.
-- Recovery cuts across the log, the stream definitions, and the control store are validated. Progress above the recovered log end is rejected, not clamped. Progress below retention remains an explicit replay error.
-- Two independent deployments cannot serve the same stream ID as competing authorities.
-
-### A.3 Transport rules
-
-- Bounded receipt means a record has been placed in a buffer the SDK reserved before the fetch. Bounded discard means dropping the rest of a batch from those buffers while still acknowledging it.
-- The SDK reserves bounded record, metadata, duplicate-suppression, and completion buffers before a fetch. All packets fit the negotiated MQTT limits.
-- The SDK acknowledges each inbox publication on bounded receipt, including completion, so Receive Maximum `1` works. It never waits for processing or for the rest of the batch before PUBACK.
-- Clients that acknowledge manually, or share one MQTT connection among several consumers, need an SDK integration that preserves connection-wide acknowledgment order. The SDK rejects unsupported configurations before open or fetch.
-- On a buffer violation the SDK fails the reader and performs bounded discard, or disconnects. Discarded progress is never saved.
-- The broker allows one outstanding fetch per reader. The SDK correlates responses by request ID, reader handle and generation, and an increasing fetch sequence, and drops duplicates within a fetch.
-- The broker retains accepted request identity after retry-cache eviction: an expired retry returns `REQUEST_EXPIRED` and never executes a new fetch. The retry cache belongs to the reader and ends with its connection; after a reconnect a retried request returns `UNKNOWN_READER`.
-- The broker invalidates old reader generations on seek. After an unrecoverable incomplete fetch the SDK reopens from saved progress. A crash after receipt acknowledgment may replay the batch.
+- **Start offsets in Topic Filters**, for example `$streams/v1/telemetry/partitions/0/earliest`: this makes each subscription entry self-contained and removes the mapping to offset User Properties. Changing `earliest` to `100`, however, creates another MQTT subscription; replacing the replay requires unsubscribing the original filter and subscribing to the new one. Delivery topics must also retain the original selector to match the filter. Keeping offsets in properties preserves a stable partition filter: a new `SUBSCRIBE` can replace its replay position, and `UNSUBSCRIBE` does not depend on the starting offset.
+- **Consume through request/response `open` and `fetch` commands:** consumers use standard `SUBSCRIBE`, `PUBLISH`, and `UNSUBSCRIBE`; no reader handles or fetch protocol are needed.
+- **Broker-assigned subsets of partitions:** callers select all partitions or name fixed partitions and replay positions. Assignment and rebalancing belong in the consumer-group proposal.
+- **Treat delivery acknowledgments as processing checkpoints:** MQTT receipt does not establish completed application work. This proposal leaves processing positions with the application.
+- **Expose physical shards or DS cursors:** replay positions must survive storage layout changes and failover.
+- **Reuse the `$stream/` namespace for versioned protocol topics:** existing stream names could collide with fixed protocol path segments.
