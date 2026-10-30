@@ -4,6 +4,7 @@
 
 * 2026-10-07: Initial draft.
 * 2026-10-22: Specify the publisher and subscriber MQTT packets; defer consumer groups to a separate proposal.
+* 2026-10-30: Add prior art: RabbitMQ Streams and NATS JetStream.
 
 ## Abstract
 
@@ -27,6 +28,13 @@ The next proposal will define the consumer-group protocol, including membership,
 The current `$stream/<name>` API replays a stream using timestamp selectors. Applications need explicit units of parallel consumption and exact positions from which to resume. Broker and client-library implementers need a packet contract that does not depend on an SDK or EMQX storage internals.
 
 This proposal provides static partition IDs, stable record identities, and explicit replay requests. Ordinary MQTT publishers continue to work without changes.
+
+Prior art:
+
+- [RabbitMQ Streams](https://www.rabbitmq.com/docs/streams): consumers read a stream through the standard protocol with an `x-stream-offset` argument of `first`, `last`, `next`, a numeric offset, or a timestamp; super streams split a logical stream into partition streams with hash routing on a message key and per-partition offsets; retention by `max-age` and `max-length-bytes` is evaluated per segment; publishers deduplicate with a producer name and a strictly increasing publishing ID; single active consumer gives one active instance per partition with takeover on failure.
+- [NATS JetStream](https://docs.nats.io/concepts/jetstream): a stream captures subjects and assigns each message a sequence number; consumers start from the beginning, the latest message, a sequence number, or a time; limits by age, count, and bytes come with a [discard-old or discard-new policy](https://docs.nats.io/learn/jetstream/shaping-the-stream); the server tracks consumer progress; [pull consumers](https://docs.nats.io/reference/jetstream/api/consumer/get-next) fetch batches with count, byte, and expiry budgets.
+
+This API follows RabbitMQ Streams in consuming through the standard protocol with an offset selector per subscription, and both systems in partitioning by key hash, replaying by offset, and limiting by age, count, and bytes with an overflow policy. It differs in rejecting out-of-range positions instead of clamping them. Server-tracked progress and single active consumer belong to the consumer-group proposal; publisher deduplication is out of scope here, and `stream-message-id` is reserved for it.
 
 ## Design
 
@@ -534,6 +542,8 @@ The request body is `{}` or `{"stream_id":"s-9f3c"}` to check an expected identi
 | `limit_mode: soft` | Track usage off the write path; count/byte limits may be exceeded until expiration catches up within an advertised lag bound. Only `drop_old` is allowed. |
 | `limit_mode: hard` | Atomically check usage, expire if needed, and append; count/byte limits are never exceeded by an append. |
 
+`overflow` corresponds to JetStream's discard policy. Soft limits match RabbitMQ Streams, which evaluates `max-age` and `max-length-bytes` per segment, so a stream can exceed a limit until the current segment closes.
+
 Soft limits ship first. Hard limits and `reject_new` require a backend prototype that meets a throughput budget agreed during review; until supported, management rejects that configuration.
 
 - Retained bytes count the uncompressed broker-encoded record once, including framing, topic, key, timestamp, optional message ID, and payload. Physical replicas and indexes are separate metrics.
@@ -564,7 +574,7 @@ Exact EMQX configuration paths and default limit values remain implementation ch
 ## Declined Alternatives
 
 - **Start offsets in Topic Filters**, for example `$streams/v1/telemetry/partitions/0/earliest`: this makes each subscription entry self-contained and removes the mapping to offset User Properties. Changing `earliest` to `100`, however, creates another MQTT subscription; replacing the replay requires unsubscribing the original filter and subscribing to the new one. Delivery topics must also retain the original selector to match the filter. Keeping offsets in properties preserves a stable partition filter: a new `SUBSCRIBE` can replace its replay position, and `UNSUBSCRIBE` does not depend on the starting offset.
-- **Consume through request/response `open` and `fetch` commands:** consumers use standard `SUBSCRIBE`, `PUBLISH`, and `UNSUBSCRIBE`; no reader handles or fetch protocol are needed.
+- **Consume through request/response `open` and `fetch` commands:** consumers use standard `SUBSCRIBE`, `PUBLISH`, and `UNSUBSCRIBE`; no reader handles or fetch protocol are needed. Open and fetch is JetStream's pull-consumer model; the subscription model here follows RabbitMQ Streams, where a consumer attaches through the standard protocol with an offset argument.
 - **Broker-assigned subsets of partitions:** callers select all partitions or name fixed partitions and replay positions. Assignment and rebalancing belong in the consumer-group proposal.
 - **Treat delivery acknowledgments as processing checkpoints:** MQTT receipt does not establish completed application work. This proposal leaves processing positions with the application.
 - **Expose physical shards or DS cursors:** replay positions must survive storage layout changes and failover.
