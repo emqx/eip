@@ -230,9 +230,11 @@ maps the existing `ssl_options` of the listener to a `ServerConfig`:
   `ServerConfig` and uses it for new connections. If the reload fails, the old
   configuration stays active.
 
-Configuration validation rejects `tls_backend = rustls` together with an option
-that Rustls cannot honor, for example PSK, TLS 1.0 or 1.1, or a cipher suite
-that Rustls does not support. The error names the option.
+The Rustls backend does not support PSK, TLS 1.0 or 1.1, or a cipher suite that
+Rustls does not implement. Configuration validation rejects `tls_backend = rustls`
+together with such an option, and the error names the option. A listener that
+must serve clients that need one of these features uses the OTP ssl backend
+(`tls_backend = otp`).
 
 Session resumption: Rustls manages its own session cache or stateless tickets.
 Resumption state is local to the listener configuration and is not shared with
@@ -240,21 +242,6 @@ OTP or with other nodes. It must keep the verified client certificate identity.
 Each MQTT CONNECT still runs EMQX authentication. 0-RTT stays disabled. The core
 prototype disables tickets (`send_tls13_tickets = 0`), the same as the OTP ssl
 server default.
-
-### Fallback to OTP ssl (later phase)
-
-A later phase can accept clients that need PSK or old cipher suites on the same
-listener. The connection reads the ClientHello with the Rustls `Acceptor`. If
-Rustls cannot serve the client, the connection gives the bytes that it read and
-the socket to OTP ssl:
-
-* With `gen_tcp`, put the bytes back with `gen_tcp:unrecv/2`, then call
-  `ssl:handshake/2`.
-* With `socket`, `unrecv` is not supported. Peek the ClientHello with
-  `socket:recv/3` and the `peek` flag instead, so that no bytes are consumed.
-
-The first delivery does not include this. A listener that must serve such
-clients uses `tls_backend = otp`.
 
 ## Configuration Changes
 
