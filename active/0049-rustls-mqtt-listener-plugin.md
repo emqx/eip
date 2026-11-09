@@ -2,67 +2,44 @@
 
 ## Changelog
 
-* 2026-11-03: Initial draft based on the EMQX 6.3 plugin prototype and its validation results.
-* 2026-11-03: Use plugin-owned listener configuration and lifecycle. Keep
-  built-in listener backends and the core schema unchanged.
-
-* 2026-11-09: @hjianbo Prepare EIP 0049 with attached prototype evidence.
+* 2026-11-03: Initial draft.
+* 2026-11-09: @hjianbo Define plugin-owned listeners and summarize prototype results.
 
 Status: Draft. Proposed EIP number: 0049. Target production release is not assigned.
 
 ## Abstract
 
-Introduce an optional MQTT/TLS listener plugin backed by upstream Rustls. The
-plugin owns its listener configuration, sockets, lifecycle and management state
-through the existing plugin framework. Built-in EMQX listeners and their schema
-remain unchanged. The plugin does not register a new built-in TLS backend.
+Provide an optional MQTT/TLS listener plugin using upstream Rustls through a Rust
+NIF. The plugin owns its configuration, listener lifecycle and management state.
+Built-in EMQX listeners and their configuration remain unchanged.
 
-Each accepted connection uses one Erlang process for TCP ownership, Rustls state,
-MQTT framing and channel execution. The plugin reuses EMQX authentication,
-authorization, routing and MQTT session handling. It does not insert a plaintext
-forwarding connection between TLS termination and the broker.
+Each connection uses one Erlang process for TCP ownership, TLS processing, MQTT
+framing and emqx_channel execution. The plugin reuses EMQX authentication,
+authorization, routing and MQTT sessions. The prototype shows lower memory and
+CPU use than the OTP TLS listener under the measured workloads.
 
-The 0.5.0 prototype supports TLS 1.2/1.3, the nine cipher suites available from its
-ring provider, client certificate authentication, session resumption, SNI, ALPN
-and file-based certificate, CRL and OCSP reload. A common-configuration benchmark
-shows lower RSS and CPU use than the OTP TLS listener. Normal message P99 is
-approximately unchanged. These results justify further qualification; they do
-not establish production readiness or complete OTP TLS equivalence.
-
-This proposal defines a plugin-managed product interface and its qualification
-work. The 0.5.0 package is experimental evidence; its disabled-profile convention
-is not that interface. Built-in TLS listeners continue to use OTP.
+This EIP proposes the plugin configuration and architecture. Prototype 0.5.0
+provides the test results below; it does not yet implement the proposed plugin
+configuration interface or establish production readiness.
 
 ## Motivation
 
-TLS connection state, buffers and process activity contribute to the cost of
-large MQTT deployments. An alternative listener can reduce this cost while
-keeping MQTT behavior in the existing EMQX channel pipeline.
+TLS state, buffers and process activity contribute to the cost of large MQTT
+deployments. A Rustls listener can reduce that cost while preserving the existing
+MQTT processing pipeline.
 
-A plugin lets operators evaluate that alternative on selected nodes and ports.
-It also allows the TLS engine and its platform artifacts to have an explicit
-support matrix. Replacing TLS code globally would make evaluation and rollback
-more difficult.
+A separate plugin lets operators evaluate selected nodes and ports and roll back
+through the existing listener deployment. TLS protocol handling and cryptography
+remain in unmodified upstream Rustls and its cryptographic provider.
 
-The proposed implementation uses an upstream TLS library rather than implementing
-the TLS protocol in the plugin. All protocol parsing, cryptography and TLS key
-management remain in Rustls and its cryptographic provider. This is in-process
-TLS termination, not certificate offload, hardware offload or kTLS.
+### Performance results
 
-### Prototype evidence
-
-The measured artifact is plugin 0.5.0, using unmodified Rustls 0.23.46 with ring.
-Its archive SHA256 is:
-
-```text
-06ceb0ac8061a20afb2f71270e72a450eb7b95d0410d2e8bba68e2ee822bde3c
-```
-
-The benchmark ran on 2026-10-29 with official EMQX 6.3.2, the EMQX OTP 28
-runtime, four broker logical CPUs, separate client CPUs and MQTT QoS 1 on an
-Intel Core i7-14700KF WSL2 host. Three complete trials rotated the listener order;
-traffic intervals lasted 20 seconds. TLS backends used the same RSA
-certificate, TLS 1.3 and AES-256-GCM, with mTLS and resumption disabled.
+The 0.5.0 prototype uses Rustls 0.23.46 with ring. Measurements ran on
+2026-10-29 with official EMQX 6.3.2 and EMQX OTP 28 on an Intel Core i7-14700KF
+WSL2 host. Three trials rotated the backend order, using four broker logical
+CPUs, separate client CPUs, 128 active clients and 20-second MQTT QoS 1 intervals.
+TLS backends used the same RSA certificate and TLS 1.3/AES-256-GCM, with mTLS and
+resumption disabled.
 
 | Metric | OTP TCP | OTP TLS | Rustls 0.5.0 | Reduction against OTP TLS |
 |---|---:|---:|---:|---:|
@@ -75,51 +52,22 @@ certificate, TLS 1.3 and AES-256-GCM, with mTLS and resumption disabled.
 | Message P99 during connection bursts, milliseconds | 1.312 | 4.720 | 1.408 | 70.2% |
 | Full connection service P99 during bursts, milliseconds | 45.728 | 85.744 | 62.832 | 26.7% |
 
-RSS and CPU values are trial means. P99 values come from pooled histograms, not
-an average of trial percentiles. Message latency starts at the scheduled send
-time and includes sender lag. Connection service time starts after a client
-concurrency slot is granted and includes TCP, TLS where applicable, MQTT CONNECT
-and CONNACK. The burst case combines 8000 idle connections, 128 active messaging
-clients, 4000 messages/s and 800 additional connections per interval.
+RSS and CPU are trial means; P99 uses pooled histograms. Added Rustls RSS ranged
+from 245 to 304 MiB. RSS includes native memory and excludes kernel socket
+memory. Message latency includes sender scheduling lag. Connection service time
+includes TCP, TLS where applicable, MQTT CONNECT and CONNACK after a client
+concurrency slot is granted.
 
-Rustls added RSS varied from 245 to 304 MiB across the accepted trials. RSS
-includes native allocations and allocator retention, and excludes kernel socket
-memory. The comparison covers whole listener implementations, including their
-framing and scheduling choices; it does not isolate cipher performance.
+The burst workload retained 8000 idle connections while sending 4000 messages/s
+and opening 800 additional connections per interval. Accepted measurements
+verified 2,880,000 messages and 7200 additional transport/MQTT connections, with
+connection resources released after cleanup.
 
-The accepted measurements verified 2,880,000 messages and 7200 additional
-transport/MQTT connections. Five externally interrupted attempts were discarded.
-The tests do not measure maximum throughput, resumed-handshake performance,
-long-duration stability or million-connection capacity.
+These are whole-listener, fixed-load measurements. They do not establish maximum
+throughput, resumed-handshake performance or million-connection capacity. Normal
+message P99 is approximately unchanged.
 
 ## Design
-
-### Scope and support contract
-
-The first scope is inbound MQTT over TCP/TLS. MQTT routing and session semantics
-remain EMQX responsibilities. WebSocket, QUIC, gateway transports and outbound
-TLS clients are outside this proposal.
-
-The prototype is qualified only for EMQX 6.3.0, 6.3.1 and 6.3.2 on OTP 28,
-Ubuntu 24.04 x86_64. New EMQX releases, architectures and operating systems need
-explicit qualification. Installation compatibility alone is insufficient.
-
-| Area | Prototype 0.5.0 | Boundary |
-|---|---|---|
-| Protocol versions | TLS 1.2 and TLS 1.3 | Older TLS versions are not provided |
-| Cipher suites | All nine ring suites, configurable preference | No legacy or external-PSK suites |
-| Key exchange | X25519, P-256 and P-384 | No FIPS or post-quantum provider qualification |
-| Client certificates | Optional or required verification against configured CAs | Rustls certificate policies apply |
-| Resumption | TLS 1.2 cache/Tickets; TLS 1.3 stateful/stateless Tickets | State is local to a listener configuration |
-| SNI and ALPN | Exact-host certificate selection and protocol negotiation | Client verification policy is listener-wide |
-| Certificate changes | Atomic replacement for new Rustls connections | Existing connections are not re-authenticated |
-| Revocation and stapling | PEM CRLs and static DER OCSP responses | File refresh is external and manual |
-| MQTT sessions | Existing EMQX pipeline | Independent of TLS resumption |
-
-Unsupported settings must fail before the listener opens. The plugin must not
-silently ignore requested security features or fall back to another backend.
-OTP-specific options with different semantics need explicit documentation and
-validation; a matching field name does not establish behavioral parity.
 
 ### Connection architecture
 
@@ -143,177 +91,101 @@ one plugin connection process
        routing and MQTT session management
 ```
 
-Decrypted application bytes stay in the owning process's MQTT pipeline. There
-is no internal plaintext TCP listener or additional forwarding process. Process
-ownership and flow control must remain consistent with EMQX management APIs,
-connection takeover, rate limits, statistics, wills and disconnect handling.
+The data path has no internal plaintext forwarding connection or extra forwarding
+process. Erlang owns socket I/O; the NIF does not start a separate network runtime.
 
-The prototype derives separately named connection modules from each qualified
-EMQX release. It never replaces the running emqx_connection module. This preserves
-the tested release behavior but creates a maintenance obligation: connection
-fixes must be reviewed and ported to each derived implementation.
+The prototype packages separately named connection implementations derived from
+each supported EMQX release. It does not replace emqx_connection. Keep support
+version-specific and assign ownership for porting core connection fixes. The
+initial plugin does not require a new core TLS backend registry or schema.
 
-The first delivery keeps these separately named connection implementations in
-the plugin and supports only explicitly qualified EMQX releases. Assign an owner
-for porting core connection fixes and verify each supported release. A future
-shared extension interface can reduce this maintenance cost, but introducing one
-is not a prerequisite or a core modification in this proposal. The current
-private EMQX/esockd APIs still require a version compatibility contract.
+### Plugin configuration and lifecycle
 
-### Plugin ownership and configuration integration
+Package defaults and a configuration schema with the plugin. Use the existing
+plugin configuration mechanism, emqx_plugins:get_config and on_config_changed
+for persisted settings and updates. A plugin coordinator manages named listener
+workers and reports desired configuration, effective state and activation errors.
 
-The plugin owns one validated configuration containing its listeners. Package
-priv/config.hocon defaults and priv/config_schema.avsc with the plugin, declare
-schema support in its metadata, read the effective configuration through
-emqx_plugins:get_config, and apply updates through on_config_changed. The plugin
-framework manages the persisted runtime configuration. Package defaults are not
-a second runtime configuration file for users to edit.
+Plugin start opens enabled listeners. Plugin stop closes its listeners,
+connections and limiters. Individual listener enable/disable affects only that
+entry. An empty configuration or all listeners disabled is a healthy idle state.
+Package defaults must open no ports until the operator configures certificates
+and enables a listener.
 
-A plugin supervisor manages the configuration coordinator and named listener
-workers. Plugin start creates the listeners whose enable field is true. Plugin
-stop closes all owned listeners and connections. Enabling or disabling an
-individual listener changes only that listener. An empty configuration or all
-listeners disabled is a valid idle state, not a health failure.
+Validate configuration and prepare TLS contexts before applying changes. Reject
+invalid options while retaining the previous active configuration. Binding
+changes can require a restart; report any partial application or failed rollback.
+Persisting configuration alone must not be reported as successful activation.
+Cluster operations must expose per-node failures through plugin status.
 
-The plugin configuration, plugin API status and runtime listener registry must
-agree. Use the existing plugin configuration UI/API for edits, and plugin CLI or
-plugin API handlers for listener details. Include desired enable state, actual
-running state, bind address, active configuration generation, connection count
-and last error. These listeners are not advertised as built-in listener entries
-or controlled through the built-in listener editor.
+Use the plugin configuration UI/API and plugin management commands. These
+listeners do not become entries in the built-in listener editor.
 
-The plugin starts after the required EMQX applications through the existing
-plugin lifecycle. It does not require a new core startup phase, a TLS backend
-registry or changes to built-in listener defaults. Plugin health reports failure
-when an enabled plugin listener cannot start. Plugin stop is an intentional stop
-of its listeners, not an attempt to unload a provider used by core listeners.
+### MQTT channel compatibility
 
-Cluster configuration operations use the existing plugin framework. Expose
-per-node listener status and failures; configuration propagation alone does not
-prove that every node opened its socket. Never report partial activation as
-complete success.
+Move connection configuration reads into the plugin's listener context where
+possible. Existing channel paths also read listener context from emqx_config;
+removing the prototype's user-maintained SSL profile requires an explicit audit
+of those dependencies.
 
-### Compatibility with the MQTT channel
+A minimal generated runtime context may bridge the existing internal APIs. It
+must derive from plugin configuration, use an owned collision-checked identity,
+and never become independently editable, persisted or responsible for another
+socket. Test cleanup, restart and listener-specific authentication against this
+mapping. Do not substitute an existing listener's identity. This compatibility
+work remains to be implemented and validated.
 
-A user-visible core SSL profile must not be required. Move connection-level
-configuration reads into the plugin's listener context where possible. Reuse
-EMQX zones, authentication, authorization and MQTT session handling through their
-existing entry points.
+### Native state and scheduling
 
-Some existing paths, including emqx_channel initialization, read listener context
-from emqx_config. The plugin must audit these reads before removing the current
-profile dependency. Where necessary, a minimal generated runtime context may
-bridge such internal APIs. It is derived from plugin configuration, has an
-owned and collision-checked identity, is not independently editable or persisted,
-and must never cause the core listener manager to bind a second socket. It is a
-compatibility projection, not a second source of desired configuration.
-
-Tests must prove that configuration updates, worker crashes, plugin restart,
-node restart and cleanup preserve this ownership. Cleanup must not remove
-another listener's context. Listener-specific authentication and management must
-use an explicitly supported identity mapping; do not silently substitute the
-identity of an existing TCP or TLS listener. This compatibility work remains to
-be implemented and validated. Unsupported integrations must be documented rather
-than resolved through an unreviewed core patch.
-
-### Native ownership and scheduling
-
-The listener shares an immutable ServerConfig through a native resource. Each
-connection owns a separate ServerConnection with its traffic keys, record state
-and buffers. Erlang owns socket I/O; the NIF does not start Tokio or a separate
-network runtime. TLS connection resources are released when the connection closes,
-including when an offline MQTT session remains in EMQX.
+A listener shares its ServerConfig; each connection owns a ServerConnection with
+its traffic keys, record state and buffers. Closing the connection releases that
+TLS state independently of an offline MQTT session.
 
 Handshake processing, connection creation, configuration construction and close
-notification use dirty CPU scheduling. In the prototype, initial application
-processing also uses dirty scheduling; established data uses calls bounded by
-16 KiB input/output chunks, nonblocking locks and CPU-timeslice accounting.
+notification run on dirty CPU schedulers. Initial application processing also
+uses dirty scheduling. The prototype's established data path uses calls bounded
+by 16 KiB chunks, nonblocking locks and CPU-timeslice accounting.
 
-The benchmark observed a maximum ordinary data NIF CPU time of 311 microseconds,
-with no calls above one millisecond. The observed maximum wall time was about
-4.05 milliseconds. Neither value is an execution-time bound. consume_timeslice
-does not preempt a running native call, and dirty CPU schedulers still compete
-for host CPU.
+Ordinary data NIF calls observed a maximum CPU time of 311 microseconds, with no
+calls above one millisecond; maximum observed wall time was about 4.05
+milliseconds. These are samples, not execution-time bounds. Timeslice accounting
+does not preempt native code, and dirty schedulers still compete for host CPU.
 
-Production qualification must audit adversarial record processing, buffering,
-resource destruction and panic paths. It must either establish an acceptable
-ordinary-scheduler work bound or move the affected work to dirty scheduling and
-repeat performance tests. A dirty-only data execution fallback is required
-before production support; it is not implemented in 0.5.0. The production default
-execution policy remains a review decision.
+Production qualification must audit adversarial input, buffering, destruction
+and panic paths. Work without an acceptable ordinary-scheduler bound must use
+dirty scheduling and be benchmarked again. A dirty-only data fallback is required
+before production support. A native crash can terminate BEAM; native binary
+upgrades currently require a fresh VM.
 
-### TLS session management
+### TLS capabilities and lifecycle
 
-Rustls manages both live TLS protocol state and the contents of resumable TLS
-sessions. The plugin configures a bounded session cache or the upstream rotating
-stateless Ticketer. It does not implement its own Ticket encryption scheme.
+The prototype supports TLS 1.2/1.3, all nine ring cipher suites, X25519/P-256/P-384,
+optional or required client certificate authentication, SNI certificate selection,
+ALPN, session resumption and file-based certificate/CRL/OCSP reload. Unknown or
+unsupported configuration must fail before opening a listener.
 
-The default configurable cache capacity is 4096 entries. Stateless Tickets use
-the upstream ring Ticketer's six-hour key rotation and twelve-hour advertised
-lifetime. Cache and Ticket keys are local to the listener configuration. They
-are not persisted, shared with OTP TLS or shared across nodes.
+Rustls manages live TLS state and resumable session contents. Configure a bounded
+cache or the upstream stateless Ticketer. Resumption state is local to the
+listener configuration, is not persisted or shared with OTP or other nodes, and
+must preserve verified client certificate identity. Each MQTT CONNECT still runs
+EMQX authentication. MQTT persistent sessions remain independent of TLS sessions.
+0-RTT stays disabled pending a separate MQTT replay policy.
 
-TLS resumption must preserve authenticated client certificate identity. Every
-new MQTT CONNECT must still execute EMQX authentication and authorization. A
-resumed TLS session must not restore revoked MQTT permissions.
+Certificate reload prepares a complete replacement before publishing it for new
+Rustls connections. Failure retains the active configuration. Established
+connections and handshakes already using the old configuration continue with
+it. Replacement invalidates previous resumption state; revocation procedures
+must separately address existing connections.
 
-0-RTT stays disabled. Enabling it would require a separate MQTT replay policy.
-Cross-node Ticket sharing and configurable cache/Ticket lifetime policies are
-future work, not implied by local resumption support.
-
-### Certificate and policy lifecycle
-
-The reload operation reads the configured certificate, private key, CA, CRL and
-OCSP files and constructs a complete replacement configuration before publishing
-it. Failure retains the working configuration. Successful replacement atomically
-changes the configuration captured by subsequently created Rustls connections.
-Existing connections and handshakes that already captured the previous
-configuration continue with it.
-
-Replacement creates fresh resumption state. A new connection cannot use an old
-Ticket or cached session to bypass a changed trust policy. Existing connections
-are not re-authenticated or disconnected automatically; revocation procedures
-must specify when operators also disconnect existing clients.
-
-CRLs use Rustls verification with expiration enforcement. OCSP responses are
-opaque stapled bytes: the external refresher must validate their contents and
-refresh them before expiration. SNI responses must respect the same stapling
-switch as the default certificate. Automated refresh and managed certificate
-integration need separate implementation before equivalent operational support
-can be claimed.
-
-### Lifecycle, operations and native artifacts
-
-The plugin listener manager controls listener start, stop and health checks.
-The EMQX plugin manager controls application installation, startup and shutdown.
-Listener stop releases its socket, connections and limiters without changing
-built-in listeners. Orderly closure of an established TLS connection sends close_notify.
-Fatal alert paths flush the alert
-without appending a second close alert. Forced process termination cannot
-promise a TLS close exchange.
-
-Publish effective capabilities, listener connection counts, handshake failures,
-resumption statistics, buffer limits and NIF execution metrics. Production
-metrics must support concurrent consumers; the prototype's reset-on-read
-benchmark counters are not a production monitoring contract.
-
-Native artifacts must be built and tested for each supported platform and OTP
-combination, with dependency versions, checksums and licenses recorded. Upstream
-Rustls remains unmodified. Protocol differences are triaged upstream rather than
-resolved through a private TLS fork. Security updates require a documented owner,
-release process and regression matrix.
-
-A native crash can terminate BEAM. Native in-place upgrades are not qualified;
-upgrading the plugin requires a fresh BEAM VM. MQTT session retention follows the
-broker's existing session implementation, not the lifetime of a TLS resource.
+CRLs use Rustls validation with expiration enforcement. Static OCSP responses
+need external validation and refresh. Automated refresh, managed certificates,
+FIPS/PQ providers and full OTP option parity are outside the current prototype.
 
 ## Configuration Changes
 
-### Proposed plugin configuration
-
-The following is the proposed contents of the plugin configuration, managed
-through the normal EMQX plugin configuration mechanism. It is not an emqx.conf
-listeners.ssl entry, and it is not yet supported by package 0.5.0.
+The following is proposed plugin configuration, managed through the existing
+plugin framework. It is not an emqx.conf listeners.ssl entry and is not yet
+supported by package 0.5.0.
 
 ```hocon
 listeners {
@@ -333,244 +205,99 @@ listeners {
       keyfile = "/etc/emqx/certs/server.key"
       versions = ["tlsv1.3", "tlsv1.2"]
       ciphers = []
-      honor_cipher_order = true
       verify = verify_none
       reuse_sessions = true
       session_tickets = stateless
       session_cache_size = 4096
       supported_groups = ["X25519", "P-256", "P-384"]
-      alpn_advertised_protocols = ["mqtt"]
-      max_fragment_size = 0
-      sni_hosts = []
-      crlfiles = []
     }
   }
 }
 ```
 
-main is a plugin listener name. The manager supports distinct named entries,
-with separate socket ownership and TLS configurations. enable=true means the
-plugin should run that listener; enable=false means it should stop it. The
-plugin must itself be running for any of its listeners to run.
+All entries use Rustls. main is a plugin listener name; enable controls that
+listener while the plugin is running. Keep TLS, SNI, revocation and cache settings
+in this single validated configuration. No separate options-file environment
+variable or user-maintained disabled core SSL profile is required.
 
-All entries use Rustls. No tls_backend selector is needed. Existing OTP TLS
-listeners retain their existing core configuration. Operators may run both
-implementations on different addresses or ports.
+Prototype migration stops the old listener, imports its settings into plugin
+configuration, removes the old profile and side-file dependency, and starts the
+new configuration after checking port ownership. Any required internal runtime
+context is generated and owned by the plugin.
 
-Provide one typed schema covering listener, TCP and TLS options, with validated
-defaults and unknown-field rejection. There is one session_tickets policy; remove
-the external file's overriding ticket_mode field. Keep SNI, cache, groups and
-revocation settings in the same plugin configuration. There is no required
-EMQX_RUSTLS_OPTIONS_FILE or manually configured application environment.
-
-The default packaged configuration must open no ports until an operator supplies
-certificates and enables a listener. Runtime configuration and its backups use
-the plugin framework's configuration location; users do not edit files inside
-the extracted package. Configuration remains available while the plugin is
-stopped. The user guide must distinguish preparing persisted configuration from
-applying a live update, according to the framework's supported workflow.
-
-### Applying changes
-
-The configuration callback parses and semantically validates the complete target
-configuration, resolves certificate files and prepares native contexts before
-changing active listeners. Serialize updates through the plugin coordinator.
-The update response and health/status must distinguish desired configuration
-from the last successfully applied generation.
-
-| Change | Required behavior |
-|---|---|
-| Enable or disable one listener | Reconcile that listener through the plugin manager |
-| Unknown option or invalid TLS configuration | Reject before activation; retain the previous active configuration |
-| Certificate, CA, CRL or OCSP replacement | Prepare a complete native context before replacing it for new connections |
-| Replace TLS configuration | Preserve established connections where supported; invalidate old resumption state for new connections |
-| Change bind address | Perform a controlled listener restart and document connection disruption |
-| Stop the plugin | Close all owned listeners and connections; leave built-in listeners unchanged |
-
-Binding changes cannot promise atomic network rollback. Report actual state and
-any failed restoration. Updates involving several listeners must report partial
-application explicitly if rollback cannot restore all sockets. Existing plugin
-configuration propagation semantics still apply; no new cluster-wide atomicity
-is implied.
-
-Some existing startup/reload notification paths do not propagate callback errors
-as a transaction failure. The plugin must expose its effective generation and
-activation error rather than equate a persisted file with a successful runtime
-update. This behavior needs E2E validation on every supported EMQX release.
-
-A certificate reload operation rereads configured paths, prepares the replacement
-and reports its result through plugin management. It does not require a built-in
-listener lifecycle or a second editable configuration. Native binary upgrades
-require a fresh VM and follow the node upgrade procedure.
-
-### Prototype migration
-
-Prototype 0.5.0 reads listeners.ssl.rustls with enable=false, opens the socket
-from its own manager and accepts a separate options file. The next plugin
-configuration interface replaces both user-maintained inputs. It does not turn
-the plugin into an implementation of the core SSL listener.
-
-Migration stops the prototype, imports the old settings into one validated plugin
-configuration, checks address ownership, removes the old user-maintained profile
-and side file dependency, and starts the new plugin configuration. If the core
-channel still requires generated runtime context, the plugin creates and owns
-that projection. It must not silently enable an old core listener profile.
-
-The benchmark used resumption disabled on both TLS backends. The configuration
-example above enables it and is not the measured benchmark profile.
+The example enables resumption; the performance comparison above disabled it.
 
 ## Backwards Compatibility
 
-Existing built-in listeners keep their settings, identities, APIs and defaults.
-Operators install and configure the plugin explicitly. No running module is
-overwritten, and no global ssl or crypto behavior is replaced. The first delivery
-does not change the core listener schema, add tls_backend or introduce a new
-core provider registry.
+Built-in listeners retain their configuration, identities, APIs and defaults.
+Operators install and configure the plugin explicitly on a separate address or
+port. No core schema, TLS backend registry or running module is replaced.
 
-OTP-only capabilities, encrypted private keys, managed certificate integration,
-PROXY protocol and non-default network access rules are not currently supported
-by the plugin. Migration requires checking the effective capability set. Do not
-assume an existing OTP SSL configuration can be copied without review.
+The prototype was tested on EMQX 6.3.0, 6.3.1 and 6.3.2 with OTP 28 on Ubuntu
+24.04 x86_64. Other releases and platforms require qualification. Encrypted
+private keys, managed certificate integration, PROXY protocol and non-default
+network access rules are not currently supported.
 
-Roll out to a limited group of nodes while retaining the OTP listener. A load
-balancer or client configuration controls traffic migration and rollback. The
-same address cannot be owned by both listeners. Moving traffic between nodes or
-backends may require a full TLS handshake because resumption state is not shared.
-
-Production promotion requires an operator procedure for certificate refresh,
-plugin failure, node restart, backend rollback and MQTT session continuity.
+Retain an OTP listener during initial rollout and migrate traffic gradually.
+Stopping the plugin closes its connections. Backend or node changes can require
+full TLS handshakes because resumption state is not shared.
 
 ## Document Changes
 
-Document installation and platform compatibility, complete configuration
-semantics, authentication and resumption boundaries, certificate reload,
-monitoring, native upgrade procedures and backend migration.
-
-Publish the reproducible benchmark conditions, individual trials and TLS test
-differences alongside any performance claim. Use added RSS and whole-node RSS
-as separate metrics. Do not translate fixed-load CPU savings into a maximum
-throughput claim or extrapolate 8000 connections to a million connections.
+Provide a user guide for plugin installation, its configuration UI/API, named
+listener lifecycle, effective status, certificates, MQTT authentication, TLS
+resumption and rollback. Document supported versions/platforms and configuration
+semantics, including the distinction between persisted and active settings.
 
 ## Testing Suggestions
 
-### Existing evidence
+### Final prototype results
 
-The prototype passes 36 real-network E2E groups on each of EMQX 6.3.0, 6.3.1
-and 6.3.2 with zero skips. Coverage includes MQTT 3.1.1/5, QoS, authentication,
-wills, offline sessions, takeover, flow control, shutdown, all nine ring suites
-with RSA/ECDSA certificates, version/group negotiation, mTLS, revocation,
-resumption, SNI, ALPN and reload failure retention. Twelve new feature groups
-fail on archived 0.4.3 and pass on 0.5.0.
+* All 36 real-network E2E groups passed on each of EMQX 6.3.0, 6.3.1 and 6.3.2,
+  with zero skips. Coverage includes MQTT 3.1.1/5, QoS, authentication, wills,
+  sessions, takeover, flow control, TLS variants, mTLS, resumption, SNI, ALPN,
+  revocation, certificate reload and cleanup.
+* Selected public tlsfuzzer probes recorded 419 passes and 21 failures across
+  440 executions, including repeated probes. The profile was TLS 1.3/AES-256-GCM
+  with RSA and no resumption. Raw assertions were retained.
+* Three failures concern legal compatibility CCS messages; a separate TLS/MQTT
+  continuation test passed all seven cases. The other 18 cover empty encrypted
+  Alerts, plaintext Finished, missing-KeyShare alert selection and legacy_version
+  handling, and need individual upstream/specification triage. They cannot all
+  be treated as harmless alert-code differences.
 
-Selected public tlsfuzzer probes execute 440 times per backend, including repeated
-sanity and random probes. The native result is 419 passes and 21 failures. The
-probe profile is TLS 1.3/AES-256-GCM/RSA without resumption. Cipher selection and
-HTTP sanity payloads were adapted for MQTT; raw TLS assertions were retained,
-with no SKIP or XFAIL conversion.
+These results do not establish full TLS conformance or OTP equivalence. The new
+plugin configuration interface was not part of prototype 0.5.0 validation.
 
-Three failures concern tests that expect rejection of legal compatibility CCS
-messages; a separate continuation test completes TLS and MQTT successfully in
-all seven cases. The other 18 failures span empty encrypted Alert handling,
-plaintext Finished handling, missing-KeyShare alert selection and legacy_version
-validation. These require individual upstream/specification triage. They must
-not all be described as harmless alert-code differences. Passing the plugin
-feature gate does not pass the public strict TLS gate.
+### Remaining qualification
 
-The OTP baseline also has probe differences. Aggregate pass counts do not rank
-backend security or establish full protocol coverage.
-
-### Production acceptance work
-
-1. Add automated Common Test/E2E coverage for every supported configuration and
-   certificate/session lifecycle. Include changed MQTT credentials during TLS
-   resumption, trust/CRL changes during reload, cross-SNI attempts and resumed
-   certificate identity. Use real TLS clients rather than mocked handshakes.
-2. Extend public conformance and certificate testing to TLS 1.2, additional
-   suites, mTLS and resumption. Triage each known failure and record upstream
-   disposition or an explicitly approved limitation. TLS-Anvil, BoGo and
-   x509-limbo are candidates, not suites already executed for this prototype.
-3. Exercise malformed records, fragmentation, KeyUpdate, partial I/O, slow
-   readers/writers, connection churn, process crashes and native resource cleanup.
-   Measure normal/dirty scheduler responsiveness under those conditions.
-4. Run sanitizers and fuzzing at the Erlang/NIF ownership boundary. Audit resource
-   destructors, input limits and failure handling in addition to protocol parsing.
-5. Add end-to-end plugin management tests covering configuration UI/API and CLI
-   status consistency; independent enable/disable of multiple listeners; idle
-   health; stop/start; invalid updates; cluster partial failures; and prototype
-   migration. Require one desired-configuration owner and one socket owner. Audit
-   any generated channel context for collisions, cleanup and accidental core
-   socket creation. Verify unchanged core schema, modules and built-in listeners.
-6. Run long-duration and large-connection-count tests on every supported platform.
-   Test mixed-version clusters, node restart, rollback and certificate rotation.
-7. Repeat performance comparisons with mTLS, TLS 1.2 and resumption enabled on
-   both backends. Include representative hardware and publish every accepted
-   trial. Keep platform noise, workload rate, sender lag and RSS retention visible.
-8. Set quantitative promotion criteria for scheduler latency, memory, resource
-   cleanup and supported features before the production qualification run.
-   The current benchmark percentages are observations, not acceptance thresholds.
-
-### Evidence and reproduction
-
-* [Evidence scope, provenance and availability](0049-assets/README.md)
-* [Functional compatibility manifest](0049-assets/functional-validation.json)
-* [Public TLS probe report](0049-assets/tls-probe-report.txt)
-* [TLS probe verification data](0049-assets/tls-probe-verification.json)
-* [Performance report with individual trials](0049-assets/performance-report.txt)
-* [Performance verification data](0049-assets/performance-verification.json)
-* [Benchmark method and commands](0049-assets/benchmark-method.txt)
-
-These are the author's prototype measurements. The implementation, native package,
-complete traffic histograms and runtime logs are not included in this EIP PR.
-The copied reports and source/package hashes preserve the reported observations;
-independent reproduction still requires publication of the implementation and
-its artifacts before production qualification.
-
-The prototype commands refer to its workspace. Functional and performance claims
-must identify the exact package and source hashes. The plugin-owned configuration
-interface proposed here was not implemented or measured in version 0.5.0.
+1. Test plugin configuration, multiple listener ownership, effective status,
+   invalid updates, idle health, stop/start, node restart and cluster partial
+   failures. Verify compatibility-context cleanup and unaffected core listeners.
+2. Cover changed MQTT credentials during resumed TLS, trust/CRL changes during
+   reload, cross-SNI attempts and certificate identity after resumption.
+3. Extend public TLS/certificate testing to TLS 1.2, mTLS, additional suites and
+   resumption, and resolve or explicitly approve known limitations.
+4. Exercise malformed records, fragmentation, KeyUpdate, partial I/O, slow peers,
+   connection churn and process crashes. Add native-boundary fuzzing/sanitizers
+   and scheduler responsiveness checks.
+5. Run long-duration and large-connection tests on every supported platform.
+   Benchmark mTLS, TLS 1.2 and resumption under matched backend configurations.
+   Define production acceptance thresholds before those qualification runs.
 
 ## Declined Alternatives
 
-### Replace the OTP TLS implementation globally
+* **Global OTP TLS replacement:** widens deployment and rollback scope to all
+  consumers of OTP TLS. The plugin provides an independently deployed listener.
+* **A plaintext forwarding process:** adds copying, process activity and another
+  flow-control boundary. Keep TLS and MQTT in the connection owner.
+* **A private Rustls fork:** transfers TLS maintenance to the plugin. Use upstream
+  releases and triage protocol differences upstream.
+* **A core backend registry in the first delivery:** changes core schema and
+  startup/lifecycle behavior. Keep listener ownership in the plugin first.
+* **A user-maintained disabled SSL profile:** creates conflicting enable semantics
+  and multiple configuration owners. Generate any internal compatibility context
+  from the plugin's single configuration.
 
-This would widen the compatibility and rollback scope to every consumer of OTP
-TLS. An independent listener preserves the existing deployment path and allows
-operators to qualify the alternative gradually.
-
-### Terminate TLS in a forwarding process inside the plugin
-
-A separate TLS owner forwarding plaintext to a normal MQTT connection adds
-processes, copying and flow-control coordination. It loses the single-process
-path being evaluated. A dirty-only NIF policy can change execution placement
-without requiring a plaintext forwarding connection.
-
-### Maintain a private Rustls fork to make public probes pass
-
-This would transfer protocol maintenance and validation responsibility to the
-plugin. Version 0.5.0 instead uses the unmodified upstream release and reports
-its known test differences. Engine updates and upstream fixes must retain a
-reproducible validation record.
-
-### Treat a sidecar or load balancer as the same implementation
-
-External TLS termination remains a valid deployment alternative and provides
-process isolation. It has different networking, failure and operational costs.
-This proposal evaluates an in-process option; it does not claim it is preferable
-for every deployment. A native crash boundary remains a reason to choose an
-external terminator.
-
-### Add a core TLS backend registry in the first delivery
-
-A registry could make the backend appear as a built-in listener option, but it
-also changes the core schema, startup ordering and lifecycle. This proposal keeps
-configuration and listener ownership in the plugin. A future core extension can
-be considered separately after the plugin has a maintained compatibility matrix.
-Version-specific connection code remains an explicit maintenance cost.
-
-### Require users to maintain a disabled core SSL profile
-
-A user-maintained profile and a separate plugin settings file create multiple
-configuration owners and confusing enable semantics. The plugin should own one
-validated listener definition. A narrowly scoped, generated runtime compatibility
-context may be necessary for existing channel APIs, but it must not become a
-second user-facing listener or an independently editable source of policy.
+External TLS termination remains a valid deployment alternative when process
+isolation or existing infrastructure is preferred.
