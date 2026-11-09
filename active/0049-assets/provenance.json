@@ -1,0 +1,30 @@
+{
+  "prototype_version": "0.5.0",
+  "archive_sha256": "06ceb0ac8061a20afb2f71270e72a450eb7b95d0410d2e8bba68e2ee822bde3c",
+  "files": {
+    "functional-validation.json": {
+      "prototype_relative_path": "validation.json",
+      "sha256": "fd5d86c75adde05e81bbd277936d3a4b3be624a3d3b6db3ca110f661e55e82b4"
+    },
+    "tls-probe-report.txt": {
+      "prototype_relative_path": "tls_validation/report.txt",
+      "sha256": "c0a6d2b272f7d2c8350e568568f9ffbbf0c0e23fc2ec01b054f6023b522ae203"
+    },
+    "tls-probe-verification.json": {
+      "prototype_relative_path": "tls_validation/results/verification.json",
+      "sha256": "6605676c1f9e40f0e64f062024341c9b2961da3581a777a92102c131a6954981"
+    },
+    "performance-report.txt": {
+      "prototype_relative_path": "benchmark_v050/report.txt",
+      "sha256": "990fc1671daba82c36fd312f8bd0c2e164816f721774cf3553ed33c4964ed06d"
+    },
+    "performance-verification.json": {
+      "prototype_relative_path": "benchmark_v050/results/verification.json",
+      "sha256": "f9ab204a573b612c135f0ba9c4ca3a7fa500da46b7ad157293c125e877c0ff8b"
+    },
+    "benchmark-method.txt": {
+      "prototype_relative_path": "benchmark_v050/README.txt",
+      "sha256": "d6576fbff4e24a776ee264ad18087babb5979d0e6175468899e921672c691d03"
+    }
+  }
+}

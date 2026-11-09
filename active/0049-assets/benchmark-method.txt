@@ -1,0 +1,40 @@
+Rustls listener 0.5.0 performance comparison
+
+From the plugin directory:
+  python3 benchmark_v050/collect_trials.py
+  python3 benchmark_v050/summarize.py
+
+Requires Docker, the cached official EMQX 6.3.2 release and the accepted 0.5.0
+archive. Uses the same payload checks, client workers and measurement approach
+as benchmark_backlog, with only OTP TCP, OTP TLS and Rustls 0.5.0.
+Existing benchmark_backlog results are not overwritten or reused.
+
+Three complete balanced trials rotate backend order. Each backend starts a
+fresh VM, warms 100 connections, measures 8000 idle connections at 6/15/30s,
+then runs four 20s traffic cases with 128 active clients and MQTT QoS1.
+The reconnect case retains 8000 idle clients while adding 800 full connections.
+All backlogs are checked as 1024. TLS uses the same RSA certificate,
+TLS1.3/AES-256-GCM, verify_none and no session resumption or Tickets.
+This measures a common TLS baseline, not every 0.5.0 feature combination.
+
+The broker uses CPUs 0-3, workers CPUs 4-7, controller CPU 8. Clients share the
+broker container network namespace; Docker port proxy is outside the data path.
+Foreign Docker CPU and host EPMD registration are monitored. Preflight checks
+free memory and CPU availability. External interference rejects the entire
+balanced trial, without selecting runs by performance values.
+WSL2/host noise is not completely eliminated; three short trials are not a
+production stability, maximum throughput or million-connection qualification.
+
+All offered messages must be sent, received and acknowledged. Every full
+connection must finish. Generator CPU must stay below 0.8 core per worker and
+P99 send lag below 10ms. Native/connection cleanup and unchanged core-module
+hashes are verified. Package and harness hashes must remain unchanged.
+
+CPU is whole broker CPU divided by messages, including connection work during
+the reconnect case. Message latency runs from scheduled publisher send time to subscriber
+receipt, including sender scheduling lag. Fixed rates are not maximum-throughput measurements. Connection P99
+includes TCP, TLS where applicable, MQTT CONNECT and CONNACK, after admission
+through the client concurrency slot. Burst completion also includes that queue.
+RSS includes native memory but excludes kernel socket memory. Both added RSS
+and whole-node RSS are reported. P99 pools all three equal-length trials;
+per-trial values remain in report.txt and results/verification.json.

@@ -1,0 +1,59 @@
+Run: 20261029-204113-efa67010
+Official EMQX 6.3.2 / OTP 28.4.1-7; OTP plaintext TCP vs OTP SSL vs Rustls plugin 0.5.0 (unmodified Rustls 0.23.46/ring).
+Three rotated-order trials; 8000 idle connections measured after 30 seconds; 20-second traffic intervals.
+128 active clients; 4 broker CPUs; separate generator CPUs; MQTT 3.1.1 QoS1.
+TLS modes: TLS 1.3 AES-256-GCM, same certificate, no tickets or resumption. TCP: plaintext.
+
+Added idle RSS MiB: mean [individual trials]. Process memory excludes native allocations.
+tcp: 296.215 [298.6484375, 300.0390625, 289.95703125]
+  RSS samples at 6/15/30 seconds: [[{"seconds": 6, "rss_added_mib": 301.453125, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 15, "rss_added_mib": 289.10546875, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 30, "rss_added_mib": 298.6484375, "mqtt_channels": 8000, "native_live": 0}], [{"seconds": 6, "rss_added_mib": 298.40234375, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 15, "rss_added_mib": 293.26953125, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 30, "rss_added_mib": 300.0390625, "mqtt_channels": 8000, "native_live": 0}], [{"seconds": 6, "rss_added_mib": 297.63671875, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 15, "rss_added_mib": 288.95703125, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 30, "rss_added_mib": 289.95703125, "mqtt_channels": 8000, "native_live": 0}]]
+  channel/adapter process memory: [{"adapter_process_bytes": 0, "adapter_processes": 0, "channel_process_bytes": 71367344, "channel_processes": 8000, "erlang_memory_bytes": {"atom": 4357391, "atom_used": 4357391, "binary": 1972040, "code": 105355967, "ets": 29589104, "processes": 114846176, "processes_used": 114758272, "system": 207546008, "total": 322392184}}, {"adapter_process_bytes": 0, "adapter_processes": 0, "channel_process_bytes": 71368736, "channel_processes": 8000, "erlang_memory_bytes": {"atom": 4357391, "atom_used": 4357391, "binary": 1955344, "code": 105356183, "ets": 29602048, "processes": 115417888, "processes_used": 115322472, "system": 207553360, "total": 322971248}}, {"adapter_process_bytes": 0, "adapter_processes": 0, "channel_process_bytes": 71367296, "channel_processes": 8000, "erlang_memory_bytes": {"atom": 4357391, "atom_used": 4357391, "binary": 1972232, "code": 105356519, "ets": 29596544, "processes": 115944648, "processes_used": 115930936, "system": 207546208, "total": 323490856}}]
+otp: 713.569 [729.55859375, 731.20703125, 679.94140625]
+  RSS samples at 6/15/30 seconds: [[{"seconds": 6, "rss_added_mib": 736.8984375, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 15, "rss_added_mib": 736.91015625, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 30, "rss_added_mib": 729.55859375, "mqtt_channels": 8000, "native_live": 0}], [{"seconds": 6, "rss_added_mib": 731.0390625, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 15, "rss_added_mib": 731.12109375, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 30, "rss_added_mib": 731.20703125, "mqtt_channels": 8000, "native_live": 0}], [{"seconds": 6, "rss_added_mib": 681.09765625, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 15, "rss_added_mib": 681.10546875, "mqtt_channels": 8000, "native_live": 0}, {"seconds": 30, "rss_added_mib": 679.94140625, "mqtt_channels": 8000, "native_live": 0}]]
+  channel/adapter process memory: [{"adapter_process_bytes": 0, "adapter_processes": 0, "channel_process_bytes": 71557376, "channel_processes": 8000, "erlang_memory_bytes": {"atom": 4357382, "atom_used": 4357382, "binary": 6609912, "code": 105356503, "ets": 30511544, "processes": 239631016, "processes_used": 239521944, "system": 216905728, "total": 456536744}}, {"adapter_process_bytes": 0, "adapter_processes": 0, "channel_process_bytes": 71557904, "channel_processes": 8000, "erlang_memory_bytes": {"atom": 4357382, "atom_used": 4357382, "binary": 6545712, "code": 105355967, "ets": 30515584, "processes": 239462024, "processes_used": 239352112, "system": 216856520, "total": 456318544}}, {"adapter_process_bytes": 0, "adapter_processes": 0, "channel_process_bytes": 71558144, "channel_processes": 8000, "erlang_memory_bytes": {"atom": 4357382, "atom_used": 4357382, "binary": 6580480, "code": 105356015, "ets": 30516656, "processes": 240878704, "processes_used": 240757552, "system": 216892616, "total": 457771320}}]
+candidate: 268.401 [245.1484375, 304.06640625, 255.98828125]
+  RSS samples at 6/15/30 seconds: [[{"seconds": 6, "rss_added_mib": 305.1953125, "mqtt_channels": 8000, "native_live": 8000}, {"seconds": 15, "rss_added_mib": 305.43359375, "mqtt_channels": 8000, "native_live": 8000}, {"seconds": 30, "rss_added_mib": 245.1484375, "mqtt_channels": 8000, "native_live": 8000}], [{"seconds": 6, "rss_added_mib": 351.68359375, "mqtt_channels": 8000, "native_live": 8000}, {"seconds": 15, "rss_added_mib": 351.7421875, "mqtt_channels": 8000, "native_live": 8000}, {"seconds": 30, "rss_added_mib": 304.06640625, "mqtt_channels": 8000, "native_live": 8000}], [{"seconds": 6, "rss_added_mib": 301.73046875, "mqtt_channels": 8000, "native_live": 8000}, {"seconds": 15, "rss_added_mib": 301.81640625, "mqtt_channels": 8000, "native_live": 8000}, {"seconds": 30, "rss_added_mib": 255.98828125, "mqtt_channels": 8000, "native_live": 8000}]]
+  channel/adapter process memory: [{"adapter_process_bytes": 0, "adapter_processes": 0, "channel_process_bytes": 72901568, "channel_processes": 8000, "erlang_memory_bytes": {"atom": 4358884, "atom_used": 4358884, "binary": 12560560, "code": 105639511, "ets": 29792240, "processes": 115925736, "processes_used": 115836224, "system": 221815312, "total": 337741048}}, {"adapter_process_bytes": 0, "adapter_processes": 0, "channel_process_bytes": 72901856, "channel_processes": 8000, "erlang_memory_bytes": {"atom": 4358884, "atom_used": 4358884, "binary": 12559656, "code": 105639191, "ets": 29784392, "processes": 116527904, "processes_used": 116441608, "system": 221805000, "total": 338332904}}, {"adapter_process_bytes": 0, "adapter_processes": 0, "channel_process_bytes": 72901664, "channel_processes": 8000, "erlang_memory_bytes": {"atom": 4358884, "atom_used": 4358884, "binary": 12544848, "code": 105639783, "ets": 29793456, "processes": 116305520, "processes_used": 116219680, "system": 221799888, "total": 338105408}}]
+
+small: CPU us/message mean [trials]; P99 ms pooled [per-trial P99].
+tcp: 87.208 [86.875, 88.12500000000001, 86.625]; P99 1.312 [1.312, 1.312, 1.312]
+otp: 171.208 [168.00000000000003, 172.12500000000006, 173.49999999999994]; P99 1.344 [4.928, 1.312, 1.328]
+candidate: 105.146 [105.06250000000003, 104.56250000000003, 105.81250000000003]; P99 1.360 [1.456, 1.328, 1.344]
+
+large: CPU us/message mean [trials]; P99 ms pooled [per-trial P99].
+tcp: 93.000 [96.75000000000003, 84.00000000000003, 98.24999999999999]; P99 1.360 [1.376, 1.344, 1.376]
+otp: 175.167 [169.24999999999991, 176.50000000000006, 179.74999999999994]; P99 1.488 [1.488, 1.728, 1.44]
+candidate: 129.750 [129.74999999999994, 130.24999999999994, 129.25000000000006]; P99 1.424 [1.44, 1.44, 1.408]
+
+small_matched: CPU us/message mean [trials]; P99 ms pooled [per-trial P99].
+tcp: 94.500 [97.25000000000001, 92.25000000000003, 93.99999999999996]; P99 1.376 [1.312, 1.392, 1.408]
+otp: 126.083 [125.0, 121.49999999999997, 131.75000000000006]; P99 1.424 [1.392, 1.376, 8.864]
+candidate: 110.500 [108.4999999999999, 105.24999999999993, 117.74999999999993]; P99 1.392 [1.392, 1.36, 1.424]
+
+reconnect: CPU us/message mean [trials]; P99 ms pooled [per-trial P99].
+tcp: 85.375 [83.87500000000001, 85.125, 87.12500000000001]; P99 1.312 [1.312, 1.296, 1.312]
+otp: 166.708 [167.0, 163.25000000000003, 169.87499999999994]; P99 4.720 [6.032, 4.688, 3.824]
+candidate: 112.875 [110.12500000000003, 110.62500000000003, 117.875]; P99 1.408 [1.392, 1.376, 1.456]
+
+Full transport + MQTT connection latency (TCP has no TLS handshake) in the reconnect scenario, ms (pooled P99 / trial P99).
+Service time begins after the client concurrency slot is granted; burst completion includes that admission queue.
+tcp handshake_service: 45.728 / [46.144, 45.392, 36.176]
+tcp burst_completion: 84.080 / [84.896, 77.632, 73.056]
+otp handshake_service: 85.744 / [82.096, 77.984, 92.672]
+otp burst_completion: 400.432 / [400.736, 367.456, 401.824]
+candidate handshake_service: 62.832 / [58.464, 57.408, 63.904]
+candidate burst_completion: 198.864 / [190.16, 184.016, 199.12]
+
+Ordinary NIF execution metrics in the measured traffic intervals (not a hard bound).
+candidate: {"max_cpu_us": 311.078, "over_1ms_cpu": 0, "max_wall_us": 4052.083}
+
+Verified messages: 2880000; additional full transport + MQTT connections: 7200.
+Host monitor samples: 438; peak foreign-container CPU: 0.03% of one core.
+Maximum client cores: 0.184; maximum sender P99 lag: 1.200 ms.
+All core-module hashes unchanged; all final MQTT channels and native resources returned to zero.
+
+RSS is the broker process increase over its warmed baseline; kernel socket memory is excluded.
+Whole-listener comparison: OTP retains its stock packet framing. No maximum-throughput claim.
+Three short trials on a shared WSL2 host do not establish production or million-connection capacity.
+P99 values are observations; per-trial ranges must be assessed before claiming a stable latency advantage.
+NIF execution maxima are observed samples, not guaranteed scheduler-blocking bounds.
