@@ -20,8 +20,9 @@ In a prototype, a wildcard route took 136 bytes instead of 255 on a table of
 100,000 routes, and a route lookup took 25% to 32% less elapsed time on the
 same tables. Exact-topic routes do not change.
 
-A cluster that is upgraded from 6.x keeps v3 until a full cluster restart, the
-same way 5.10.4 moved from v2 to v3.
+A cluster that is upgraded from 6.x keeps v3 during the rolling upgrade.
+A full cluster restart with v4 configured (the default) completes the switch,
+the same way 5.10.4 moved from v2 to v3.
 
 ## Motivation
 
@@ -220,8 +221,11 @@ The metadata check is against the live `mria_schema` table, as in
 names in the on-disk Mnesia schema alone must not force v3 after a full
 cluster restart.
 
-A node that runs v3 in a 7.0 cluster logs a warning that a full cluster restart
-completes the upgrade, like the v2 warning today.
+A node that runs v3 in a 7.0 cluster logs a warning with the upgrade steps:
+remove any explicit `broker.routing.storage_schema = v3` setting, or set it to
+v4 on every node; then stop all nodes and restart them one by one. Changing
+the setting alone does not switch a running v3 cluster. A full restart with an
+explicit v3 setting still selects v3.
 
 ## Prototype Results
 
@@ -351,7 +355,8 @@ becomes `v4`. The field stays hidden. v2 must be retired before the upgrade.
   switch it to v3 with a full cluster restart while all nodes still run 6.x.
   A 7.0 node refuses to join a cluster that still uses v2.
 * **Rolling upgrade from 6.x.** 7.0 nodes that join a 6.x cluster use v3. They
-  log a warning. A full cluster restart switches the cluster to v4.
+  log a warning. Once every node is configured to use v4 (the default), a full
+  cluster restart switches the cluster to v4.
 * **A 6.x node in a v4 cluster.** A 6.x node does not know v4. It must not join
   a v4 cluster, because it would write v3 rows that the v4 nodes never read.
   A 6.x patch release must refuse to boot when a peer reports a schema version
@@ -369,8 +374,8 @@ becomes `v4`. The field stays hidden. v2 must be retired before the upgrade.
 The 7.0 upgrade guide must state:
 
 * the minimum 6.x version to upgrade from, and that the cluster must use v3;
-* that a full cluster restart after the rolling upgrade enables the smaller
-  route rows;
+* how to remove an explicit v3 setting and perform a full cluster restart
+  after the rolling upgrade to enable the smaller route rows;
 * what the v3 warning at boot means.
 
 ## Testing Suggestions
@@ -384,8 +389,9 @@ The 7.0 upgrade guide must state:
   node follows v3 or v4 peers despite a different local setting; v2,
   unsupported reported versions and conflicting v3/v4 peers or table metadata
   prevent boot; a full restart enables v4 despite old Mnesia table
-  definitions; Mria removes the
-  rows of a node that leaves, on a core node and on a replicant node.
+  definitions; an explicit v3 setting keeps v3 after a full restart; Mria
+  removes the rows of a node that leaves, on a core node and on a replicant
+  node.
 * A broker-level publish benchmark with a large wildcard route table, on
   several schedulers.
 
