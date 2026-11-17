@@ -15,13 +15,19 @@
   fields use `throttle`. Both are enumerations now. The retained message action
   gained a `reject` value, which tells the client that the publish failed
   instead of dropping it in silence.
+* 2026-11-17: @zmstone Added the clean-down backlog of `emqx_cm_pool` as a
+  third condition, on every node. On a replicant node it is the only local
+  value that shows slow writes to the core node. Added a sample and a
+  statistic for that pool, in the same form as the broker pool has them.
 
 ## Abstract
 
 EMQX does not react when its transaction path falls behind. On a core node the
 `mnesia_tm` process mailbox grows. On a replicant node the Mria replication
-backlog grows. EMQX measures both values today and raises an alarm for one of
-them, but no component uses either value to make a decision.
+backlog grows. On any node the queue of disconnected channels that wait for
+clean-down grows. EMQX measures the first two values today and raises an alarm
+for one of them. It does not measure the third. No component uses any of them
+to make a decision.
 
 This EIP adds one new indicator for this condition and two optional actions
 that an operator can enable. A node reads the indicator from values that are
@@ -42,7 +48,7 @@ EMQX has three components that watch node load.
   It raises an alarm when a sample is above a fixed threshold. No component
   reads these samples to make a decision.
 
-Three gaps follow from this.
+Four gaps follow from this.
 
 1. No component measures how far the transaction path is behind. The
    `mnesia_tm` mailbox sample exists, but it only drives an alarm.
@@ -52,6 +58,11 @@ Three gaps follow from this.
    sample of that distance exists today. Only Prometheus reads it.
 3. Both existing mailbox thresholds are fixed numbers. The same number raises
    and clears the alarm, so the alarm flaps at the boundary.
+4. No component samples `emqx_cm_pool`, the pool that cleans up disconnected
+   channels. On a replicant node each clean-down writes to a core node. When
+   those writes are slow, the pool falls behind and nothing reports it. The
+   replication backlog does not show it, because it counts the transactions
+   that come from the core node, not the writes that go to it.
 
 The run queue flag and the memory flag measure different resources, and
 `emqx_olp` reports the run queue flag only. That separation is intentional. This
@@ -70,12 +81,24 @@ scope here.
   consistent with replicated state that fell behind on a replicant node. Nothing
   in EMQX today tells a replicant node that its own import path is behind. This
   EIP does not fix divergence. It makes the condition visible to the node.
+* A replicant node with a long round trip to its core nodes fell behind on
+  clean-down under steady connection churn. Each clean-down was one
+  synchronous call to a core node, and the pool has one worker per scheduler.
+  So the node cleaned up at most `schedulers / round trip` channels per second,
+  for example 80 per second with 4 schedulers and a 50 ms round trip. The
+  backlog grew for as long as the churn was higher. While a channel waits, the
+  node refuses a client that reconnects to it with the same client ID.
+  emqx/emqx#20106 now cleans up to 1000 channels with one call. In a test with
+  one core node, one replicant node and an added network delay, it raised the
+  clean-down rate about 300 times. The pool can still fall behind when the core
+  node is slow, and nothing reports it.
 
 ## Scope
 
 This EIP covers one indicator and two actions.
 
-The indicator is the transaction backlog of the local node.
+The indicator is the transaction backlog of the local node. On a replicant
+node it includes the writes that wait for a core node.
 
 The actions are:
 
@@ -102,8 +125,9 @@ because line numbers change between branches.
 ### The indicator
 
 The indicator is named transaction backlog. It is a boolean. A node sets it
-from a local queue depth. A replicant node has a second condition, which the
-next section describes.
+from a local queue depth. A replicant node has a second condition, and every
+node has a third. The next sections describe them. The indicator is set when
+any condition is true.
 
 A core node and a replicant node use different sources, because the work is in
 a different place on each.
@@ -169,6 +193,72 @@ therefore returns `true` for `disconnected`, and it raises no error. The code
 must match the integer case. A disconnected shard must not set the indicator,
 because Mria handles that state.
 
+### Third condition: clean-down backlog
+
+Every node sets the indicator when its clean-down backlog is above its high
+watermark.
+
+When a channel process exits, `emqx_cm` marks the channel disconnected and
+queues a clean-down task in `emqx_cm_pool`. One task holds the channels of one
+batch of exit signals, up to `node.channel_cleanup_batch_size`. The task
+removes each channel from the local tables and from the global channel
+registry. The pool has one worker per scheduler.
+
+On a replicant node the registry write is a synchronous call to a core node.
+The first two conditions do not see this work. The local queue depth and the
+replication lag count the transactions that come from the core node, and these
+writes go to it. A replicant node whose writes to the core node are slow
+therefore falls behind while both conditions stay clear. A long round trip or a
+slow core node can cause it.
+
+While a channel waits for clean-down:
+
+* the node refuses a client that reconnects to it with the same client ID;
+* the local tables keep the rows of the channel, and the session and
+  connection counts include it;
+* the registry keeps a row that points to a process that no longer exists.
+
+**Source.** The source is the largest mailbox length among the `emqx_cm_pool`
+workers. `emqx_broker_mon` already reads the broker pool in this way. It reads
+one `message_queue_len` for each worker and makes no call to another node.
+
+**The unit is a task, not a channel.** A worker cleans up to 1000 channels with
+one call to a core node, and it merges small queued tasks into one call. With
+the default `node.channel_cleanup_batch_size` of 1000, one task therefore costs
+at most one call, and the sample multiplied by the round trip is close to the
+longest wait of a channel in that worker. A larger batch size costs one call
+for each 1000 channels of a task. This holds only with the batch clean-down of
+emqx/emqx#20106. Without it, a task costs one call for each of its channels.
+Implement this condition on a release that has the batch clean-down.
+
+**Watermarks.** The sample is a queue depth, so Watermarks and debounce applies
+to it. Its floor is a new setting,
+`sysmon.backlog.clean_down_high_watermark_floor`. The default is 500, the same
+as the broker pool alarm threshold. With a 100 ms round trip, 500 tasks in one
+worker are up to 50 seconds of wait.
+
+**Visibility.** Expose the sample in the same form as the broker pool sample:
+
+* the node statistics gain `cm_pool_max_mailbox_size`, next to
+  `broker_pool_max_mailbox_size`;
+* Prometheus gains the gauge `emqx_vm_cm_pool_max_mailbox_size`.
+
+`emqx_broker_mon` takes this sample for the statistic whatever the value of
+`sysmon.backlog.enable`, as it does for the broker pool. This EIP adds no alarm
+for the pool.
+
+**Which action helps.** Action 1 helps. Each new connection is a later
+clean-down, and on a replicant node its registration is one more call to the
+same core node. A rejected client connects to another node, whose pool does not
+share this backlog. The node already refuses a client that reconnects with the
+same client ID. Action 1 extends the refusal to all new clients.
+
+Action 2 helps only when the core node is slow, because on a replicant node a
+retained message write also goes to a core node. After a disconnect burst on a
+node with a healthy core node, action 2 drops retained messages and gains
+nothing. Both actions read the same indicator, so an operator cannot enable an
+action for one condition only. See Future Discussion.
+
 ### The sampler
 
 The lag sampler exists today. `emqx_prometheus_cache` calls
@@ -217,6 +307,7 @@ purpose:
 | Value | Default | Source of the default |
 |---|---|---|
 | floor | 500 | the current `mnesia_tm` mailbox alarm threshold |
+| floor of the clean-down backlog | 500 | the current broker pool mailbox alarm threshold |
 | multiplier | 10 | `lc` treats the run queue as high at 8 times the scheduler count |
 | ratio | 0.5 | gives the same shape of gap that the run queue ladder has |
 | consecutive samples | 3 | the debounce count that `lc` uses for the run queue |
@@ -354,6 +445,7 @@ sysmon {
     low_watermark_ratio = 0.5
     sustained_samples = 3
     lag_threshold = 100000         # replicant only, 0 disables this condition
+    clean_down_high_watermark_floor = 500   # in queued tasks
   }
 }
 ```
@@ -362,9 +454,10 @@ sysmon {
 Set it to `0` to use the local queue depth alone.
 
 The indicator is node-scoped because every input is a node property. A node has
-one `mnesia_tm` process and one replica process for a shard, whatever the number
-of zones its listeners use. The actions stay zone-scoped, because an operator
-can reasonably protect one zone and not another.
+one `mnesia_tm` process, one replica process for a shard, and one
+`emqx_cm_pool`, whatever the number of zones its listeners use. The actions stay
+zone-scoped, because an operator can reasonably protect one zone and not
+another.
 
 ## Backwards Compatibility
 
@@ -375,6 +468,10 @@ can reasonably protect one zone and not another.
 * The `mnesia_transaction_manager_overload` and `broker_pool_overload` alarms do
   not change. This EIP reads the same sample. It does not change what the alarms
   report or when they report it.
+* The node statistics gain one field and Prometheus gains one gauge. The
+  existing fields and gauges do not change.
+* The clean-down condition reads a local process property. It needs no call to
+  another node and no new cluster RPC.
 * The existing `overload_protection.*` counters keep their names and their
   meaning.
 * A node computes and applies the indicator locally. A node that runs older code
@@ -397,6 +494,8 @@ can reasonably protect one zone and not another.
   unit is a transaction count and not a time.
 * State in the operations guide that `mnesia_tm_mailbox_size_alarm_threshold`
   also sets the floor of the high watermark when the indicator is enabled.
+* Document `sysmon.backlog.clean_down_high_watermark_floor` and the new
+  statistic. State that their unit is a queued task, not a channel.
 
 ## Testing Suggestions
 
@@ -408,6 +507,13 @@ can reasonably protect one zone and not another.
   `message_queue_len` alone, with the lag at zero.
 * Lag condition: the indicator sets from the lag alone, with both local
   counters at zero. This is the fault that the local counters cannot report.
+* Clean-down condition: the indicator sets from the `emqx_cm_pool` sample
+  alone, with the queue depth and the lag at zero. To build the backlog,
+  suspend the pool workers and disconnect clients. On a replicant node, also
+  block the link to the core node and check that the indicator sets.
+* Clean-down unit: one queued task that holds 1000 channels counts as one.
+* Clean-down statistic: the node statistics and Prometheus report the same
+  sample, also when `sysmon.backlog.enable` is `false`.
 * `disconnected`: the indicator does not set when the cached lag is the atom
   `disconnected`. Assert this with the threshold set to a low value, so that a
   term order comparison would set the indicator.
@@ -443,7 +549,9 @@ Each one needs its own discussion.
   with ordered levels, so that a reversible action fires before an action that
   loses data. With two actions and one indicator, two independent switches give
   the operator the same control and are simpler to reason about. Levels become
-  useful only when the number of actions grows.
+  useful only when the number of actions grows. The same applies to a choice of
+  action per condition: action 2 does not help with a clean-down backlog on a
+  node whose core node is healthy, but both actions read one indicator.
 * **Change `zone.overload_protection.enable` to `true` by default.** Declined.
   See Declined Alternatives.
 * **Skip hibernation and garbage collection under memory pressure.** Hibernation
@@ -459,7 +567,9 @@ Each one needs its own discussion.
 * **Pace the cleanup work itself.** emqx/emqx#11187 shows a disconnect burst.
   Rejecting new connections does not slow the cleanup that the burst already
   started. A mechanism that paces session and route deletion would address the
-  cause. It is a larger change than this EIP.
+  cause. It is a larger change than this EIP. The batch clean-down already
+  makes the cleanup on a replicant node cheaper: one call to a core node cleans
+  up to 1000 channels. It does not pace the work.
 
 ## Declined Alternatives
 
@@ -482,6 +592,14 @@ the union of all three.
 **Use `mria_status:get_shard_lag/1` as the replicant source.** Declined. The
 function makes an `erpc` call to the core node. A detector must not block on a
 call to the node that it suspects is overloaded.
+
+**Count the waiting channels instead of the queued tasks.** Declined. `emqx_cm`
+would add to a counter and the pool would subtract from it. The count must
+stay correct when a task fails or when a worker restarts with tasks in its
+mailbox. A count that stays too high keeps the indicator set and rejects
+connections with no end. A mailbox length has no state that can drift, and with
+the batch clean-down and the default batch size, one task costs at most one
+call to a core node. So the task is the right unit for the wait.
 
 **Use the fixed threshold 500 as the only watermark.** Declined. One absolute
 number cannot be correct for a small node and for a large multi-tenant node.
