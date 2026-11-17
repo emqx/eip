@@ -223,12 +223,13 @@ workers. `emqx_broker_mon` already reads the broker pool in this way. It reads
 one `message_queue_len` for each worker and makes no call to another node.
 
 **The unit is a task, not a channel.** A worker takes the queued tasks until it
-has about 1000 channels, and it cleans all of them with one call to a core
-node. One task therefore costs at most one call, and the sample multiplied by
-the round trip is close to the longest wait of a channel in that worker. This
-holds only with the batch clean-down of emqx/emqx#20106. Without it, a task
-costs one call for each of its channels. Implement this condition on a release
-that has the batch clean-down.
+has `node.channel_cleanup_batch_size` channels, which is 1000 at most, and it
+cleans all of them with one call to a core node. One task therefore costs at
+most one call, and the sample multiplied by the round trip is close to the
+longest wait of a channel in that worker. This holds only with the batch
+clean-down of emqx/emqx#20106. Without it, a task costs one call for each of
+its channels. Implement this condition on a release that has the batch
+clean-down.
 
 **Watermarks.** The sample is a queue depth, so Watermarks and debounce applies
 to it. Its floor is a new setting,
