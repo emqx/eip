@@ -88,7 +88,7 @@ scope here.
   for example 80 per second with 4 schedulers and a 50 ms round trip. The
   backlog grew for as long as the churn was higher. While a channel waits, the
   node refuses a client that reconnects to it with the same client ID.
-  emqx/emqx#20106 now cleans up to 1000 channels with one call. In a test with
+  emqx/emqx#20106 now cleans about 1000 channels with one call. In a test with
   one core node, one replicant node and an added network delay, it raised the
   clean-down rate about 300 times. The pool can still fall behind when the core
   node is slow, and nothing reports it.
@@ -222,14 +222,13 @@ While a channel waits for clean-down:
 workers. `emqx_broker_mon` already reads the broker pool in this way. It reads
 one `message_queue_len` for each worker and makes no call to another node.
 
-**The unit is a task, not a channel.** A worker cleans up to 1000 channels with
-one call to a core node, and it merges small queued tasks into one call. With
-the default `node.channel_cleanup_batch_size` of 1000, one task therefore costs
-at most one call, and the sample multiplied by the round trip is close to the
-longest wait of a channel in that worker. A larger batch size costs one call
-for each 1000 channels of a task. This holds only with the batch clean-down of
-emqx/emqx#20106. Without it, a task costs one call for each of its channels.
-Implement this condition on a release that has the batch clean-down.
+**The unit is a task, not a channel.** A worker takes the queued tasks until it
+has about 1000 channels, and it cleans all of them with one call to a core
+node. One task therefore costs at most one call, and the sample multiplied by
+the round trip is close to the longest wait of a channel in that worker. This
+holds only with the batch clean-down of emqx/emqx#20106. Without it, a task
+costs one call for each of its channels. Implement this condition on a release
+that has the batch clean-down.
 
 **Watermarks.** The sample is a queue depth, so Watermarks and debounce applies
 to it. Its floor is a new setting,
@@ -569,7 +568,7 @@ Each one needs its own discussion.
   started. A mechanism that paces session and route deletion would address the
   cause. It is a larger change than this EIP. The batch clean-down already
   makes the cleanup on a replicant node cheaper: one call to a core node cleans
-  up to 1000 channels. It does not pace the work.
+  about 1000 channels. It does not pace the work.
 
 ## Declined Alternatives
 
@@ -598,8 +597,8 @@ would add to a counter and the pool would subtract from it. The count must
 stay correct when a task fails or when a worker restarts with tasks in its
 mailbox. A count that stays too high keeps the indicator set and rejects
 connections with no end. A mailbox length has no state that can drift, and with
-the batch clean-down and the default batch size, one task costs at most one
-call to a core node. So the task is the right unit for the wait.
+the batch clean-down one task costs at most one call to a core node. So the
+task is the right unit for the wait.
 
 **Use the fixed threshold 500 as the only watermark.** Declined. One absolute
 number cannot be correct for a small node and for a large multi-tenant node.
