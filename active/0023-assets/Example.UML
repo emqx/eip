@@ -1,0 +1,85 @@
+title QUIC Multi-Streams Setup Flow
+actor Client
+boundary Quicer
+control ConnOwner
+control EmqxConnection
+control DataStream1
+control DataStream2
+autonumber 1
+== Init ==
+note over ConnOwner: Accepting New Connection
+Client -> Quicer : QUIC: New connection
+note over Quicer: Pick new connection owner
+Quicer -> ConnOwner : {quic, new_conn, ... }
+Activate ConnOwner
+Client -> Quicer : QUIC: New Stream 1, with MQTT.Connect
+Client -> Quicer : QUIC: New Stream 2, with MQTT.Subscribe
+Client -> Quicer : QUIC: New Stream 3, with MQTT.Publish
+create EmqxConnection
+ConnOwner -> EmqxConnection: spawn
+Deactivate ConnOwner
+note right: Accepting Control Stream
+EmqxConnection -> ConnOwner: initialized
+Activate ConnOwner
+ConnOwner -\\o Quicer: NIF call\n handshake
+Deactivate ConnOwner
+Quicer <----> Client: Complete Handshake
+== QUIC Handshake Done ==
+Quicer -> EmqxConnection: {quic, new_stream, Stream1, ... }
+note over EmqxConnection: Stream1 is Control Stream
+activate EmqxConnection
+Quicer -> EmqxConnection: {quic, Stream1, << MQTT.Connect ...>>}
+Quicer -> ConnOwner: {quic, new_stream, Stream2, ... }
+Activate ConnOwner
+note over ConnOwner: Stream2 is DataStream
+create DataStream1
+ConnOwner ----> DataStream1: Spawn
+Quicer -> ConnOwner: {quic, new_stream, Stream3, ... }
+note over ConnOwner: Stream3 is DataStream
+ConnOwner <---> DataStream1: Ownership handoff
+Deactivate DataStream1
+Note over DataStream1: Owner of Stream2\nrecv mode: passive \n Processing Pending
+create DataStream2
+ConnOwner ----> DataStream2: Spawn
+ConnOwner <---> DataStream2: Ownership handoff
+Deactivate DataStream2
+Deactivate ConnOwner
+
+Note over DataStream2: Owner of Stream3\nrecv mode: passive\n Processing Pending
+
+note over EmqxConnection: Finish AUTH, Create Channel
+EmqxConnection -\\o Quicer: NIF Send MQTT.ConnAck via Stream1
+Quicer -> Client: MQTT.ConnAck
+== Control Stream Setup Success ==
+EmqxConnection -> ConnOwner: Call activate_data_streams
+Activate ConnOwner
+Note over ConnOwner: Activate pending data streams
+ConnOwner -> DataStream1: activate with a copy of ChannelInfo
+DataStream1 --> DataStream1: activate
+ConnOwner -> DataStream2: activate with a copy of ChannelInfo
+DataStream2 --> DataStream2: activate
+ConnOwner -> EmqxConnection: reply call ok
+Note over DataStream1: NIF call:\nsetopt active true
+Note over DataStream2: NIF call:\nsetopt active true
+deactivate ConnOwner
+deactivate EmqxConnection
+== Data Streams Activated ==
+{DataSub} Quicer -> DataStream1: {quic, Stream2, << MQTT.SUBSCRIBE... >>
+Activate DataStream1
+Note over DataStream1: Processing MQTT.Subscribe
+DataStream1 -\\o Quicer: NIF send: MQTT.SUBACK via Stream2
+Deactivate DataStream1
+Quicer -> Client: MQTT.SUBACK
+{DataPub} Quicer -> DataStream2: {quic, Stream3, << MQTT.PUBLISH... >>
+Activate DataStream2
+{DataSub} <-> {DataPub}: Can be in different ORDER
+Note over DataStream2: Processing MQTT.Publish
+DataStream2 -\\o Quicer: NIF send: MQTT.PUBACK via Stream3
+Quicer -> Client: MQTT.PUBACK
+DataStream2 -> DataStream1: Publish Msg
+Deactivate DataStream2
+DataStream1 -\\o Quicer: NIF call\nMQTT.Publish via Stream2
+Deactivate DataStream1
+Quicer -> Client: MQTT.Publish over Stream2
+Client -> Quicer: MQTT.PubAck  over Stream2
+Quicer -> DataStream1: {quic, Stream2, << MQTT.PUBACK... >>
